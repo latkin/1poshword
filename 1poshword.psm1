@@ -1,11 +1,8 @@
-param(
-    [string] $Name,
-    [switch] $PassOnly,
-    [string] $1PasswordRoot = ("${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default")
-)
-
+#Requires -Version 3
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
+
+$1passwordRoot = $null
 
 function DecodeSaltedString
 {
@@ -156,7 +153,8 @@ function DecryptItem
 {
     param(
         [string] $ItemID,
-        [SecureString] $MasterPassword
+        [SecureString] $MasterPassword,
+        [switch] $PassOnly
     )
     
     $itemJson = cat "$1PasswordRoot\$itemID.1password" | ConvertFrom-Json
@@ -184,21 +182,36 @@ function DecryptItem
     $login.Password
 }
 
-$contents = GetContents
-
-$item = $contents |?{ $_.Name -like $name }
-
-if(-not $item)
+function Unprotect-1PEntry
 {
-    Write-Error "Unable to find entry matching $name"
-    return
+    param(
+        [string] $Name,
+        [switch] $PassOnly,
+        [string] $1PasswordRoot = ("${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default")
+    )
+
+    $contents = GetContents
+
+    $item = $contents |?{ $_.Name -like $name }
+
+    if(-not $item)
+    {
+        Write-Error "Unable to find entry matching $name"
+        return
+    }
+
+    if(@($item).Length -gt 1)
+    {
+        Write-Error "More than one entry matches ${name}: $(($item |% Name) -join ',')"
+    }
+
+    $pass = Read-Host "1Password master password" -AsSecureString
+
+    $script:1PasswordRoot = $1PasswordRoot
+
+    DecryptItem $item.ID $pass -PassOnly:$passOnly.IsPresent
 }
 
-if(@($item).Length -gt 1)
-{
-    Write-Error "More than one entry matches ${name}: $(($item |% Name) -join ',')"
-}
+New-Alias -Name 1p -Value Unprotect-1PEntry
 
-$pass = Read-Host "1Password master password" -AsSecureString
-
-DecryptItem $item.ID $pass
+Export-ModuleMember -Function 'Unprotect-1PEntry' -Alias '1p'
