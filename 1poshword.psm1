@@ -211,7 +211,7 @@ function DecryptItem
     $decryptionKey = GetDecryptionKey $keyId $securityLevel $rootDir
 
     $decoded = DecodeSaltedString $decryptionKey.data
-    $keyKey = DeriveKeyPbkdf2 $masterPassword $decoded.Salt 100000
+    $keyKey = DeriveKeyPbkdf2 $masterPassword $decoded.Salt $decryptionKey.Iterations
     $dataKey = AESDecrypt $decoded.Data $keyKey.Key $keyKey.IV
 
     $decodedValidation = DecodeSaltedString $decryptionkey.validation
