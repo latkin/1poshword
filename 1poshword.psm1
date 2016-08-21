@@ -163,6 +163,7 @@ function GetPayloadFromDecryptedJson
             $password = $item.fields |?{ $_.designation -eq 'password' } |%{ $_.value }
             $username = $item.fields |?{ $_.designation -eq 'username' } |%{ $_.value }
             [PSCustomObject] @{
+                Type = $typeName
                 Username = $username
                 Password = $password
                 Text = $null
@@ -171,6 +172,7 @@ function GetPayloadFromDecryptedJson
         }
         'passwords.Password' {
             [PSCustomObject] @{
+                Type = $typeName
                 UserName = $null
                 Password = $item.password
                 Text = $null
