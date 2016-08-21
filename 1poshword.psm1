@@ -1,8 +1,28 @@
 #Requires -Version 3
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
+$isWindows,$isOSX,$isLinux = 
+    if($psVersionTable.PSVersion.Major -ge 6){ $isWindows,$isOSX,$isLinux }
+    else { $true,$false,$false }
 
 $1passwordRoot = "${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default"
+
+function ClipboardCopy
+{
+    param(
+        [string[]] $data
+    )
+
+    if($isWindows) {
+        $data | clip.exe
+    } elseif($isOSX) {
+        $data | pbcopy
+    } elseif($isLinux -and (gcm xclip)) {
+        $data | xclip
+    } else {
+        Write-Error "Unable to locate clipboard utility"
+    }
+}
 
 function DecodeSaltedString
 {
@@ -210,16 +230,18 @@ function Unprotect-1PEntry
         [Parameter(Mandatory = $true, Position = 0)]
         [string] $Name,
 
-        [Parameter(Mandatory = $false)]
         [PSCredential] $Credential = ($null),
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'ascredential')]
+        [Parameter(ParameterSetName = 'ascredential')]
         [switch] $AsCredential,
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'passwordonly')]
+        [Parameter(ParameterSetName = 'passwordonly')]
         [switch] $PasswordOnly,
 
-        [Parameter(Mandatory = $false)]
+        [Parameter(ParameterSetName = 'plain')]
+        [Parameter(ParameterSetName = 'passwordonly')]
+        [switch] $ToClipboard,
+
         [ValidateScript({Test-Path $_ -PathType Container})]
         [string] $1PasswordRoot = ($script:1PasswordRoot)
     )
@@ -250,20 +272,24 @@ function Unprotect-1PEntry
 
     $decrypted = DecryptItem $item.ID $plainPass $1passwordRoot
 
-    switch($psCmdlet.ParameterSetName) {
-        'plain' {
-            $decrypted.Username
-            $decrypted.Password
+    $result =
+        switch($psCmdlet.ParameterSetName) {
+            'plain' {
+                $decrypted.Username
+                $decrypted.Password
+            }
+            'passwordonly' {
+                $decrypted.Password
+            }
+            'ascredential' {
+                $securePass = New-Object SecureString
+                $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
+                New-Object PSCredential @($decrypted.Username, $securePass)
+            }
         }
-        'passwordonly' {
-            $decrypted.Password
-        }
-        'ascredential' {
-            $securePass = New-Object SecureString
-            $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
-            New-Object PSCredential @($decrypted.Username, $securePass)
-        }
-    }
+    
+    if($toClipboard) { ClipboardCopy $result }
+    else { $result }
 }
 
 New-Alias -Name 1p -Value Unprotect-1PEntry
