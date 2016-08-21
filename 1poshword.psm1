@@ -2,7 +2,7 @@
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
 
-$1passwordRoot = $null
+$1passwordRoot = "${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default"
 
 function DecodeSaltedString
 {
@@ -21,13 +21,12 @@ function DecodeSaltedString
 function DeriveKeyPbkdf2
 {
     param(
-       [SecureString] $password,
+       [string] $password,
        [byte[]] $salt,
        [int] $iters
     )
     
-    $unsecurePassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($password))
-    $deriveBytes = new-object System.Security.Cryptography.Rfc2898DeriveBytes $unsecurePassword,$salt,$iters
+    $deriveBytes = new-object System.Security.Cryptography.Rfc2898DeriveBytes $password,$salt,$iters
     $keyData = $deriveBytes.GetBytes(32)
     
     [PSCustomObject]@{
@@ -67,7 +66,7 @@ function AESDecrypt
         [byte[]] $iv
     )
     
-    $aes = New-Object System.Security.Cryptography.AesManaged
+    $aes = [System.Security.Cryptography.Aes]::Create()
     $aes.Key = $key
     $aes.IV = $iv
     $aes.Padding = 'None'
@@ -99,9 +98,11 @@ function GetDecryptionKey
 {
     param(
         [string] $KeyId,
-        [string] $SecurityLevel
+        [string] $SecurityLevel,
+        [string] $RootDir
     )
-    $keysJson = cat "$1PasswordRoot\encryptionKeys.js" | ConvertFrom-Json
+
+    $keysJson = cat "$rootDir\encryptionKeys.js" | ConvertFrom-Json
     if($keyId)
     {
         $keysJson.list |?{ $_.identifier -eq $keyId }
@@ -114,7 +115,11 @@ function GetDecryptionKey
 
 function GetContents
 {
-    foreach($item in (cat "$1PasswordRoot\contents.js" | ConvertFrom-Json))
+    param(
+        [string] $RootDir
+    )
+
+    foreach($item in (cat "$rootDir\contents.js" | ConvertFrom-Json))
     {
         [PSCustomObject]@{
             ID = $item[0]
@@ -153,18 +158,19 @@ function DecryptItem
 {
     param(
         [string] $ItemID,
-        [SecureString] $MasterPassword,
-        [switch] $PassOnly
+        [string] $MasterPassword,
+        [switch] $PassOnly,
+        [string] $RootDir
     )
     
-    $itemJson = cat "$1PasswordRoot\$itemID.1password" | ConvertFrom-Json
+    $itemJson = cat "$rootDir\$itemID.1password" | ConvertFrom-Json
     
     Set-StrictMode -Off
     $keyId = $itemJson.KeyID
     $securityLevel = $itemJson.securityLevel
     Set-StrictMode -Version 2
     
-    $decryptionKey = GetDecryptionKey $keyId $securityLevel
+    $decryptionKey = GetDecryptionKey $keyId $securityLevel $rootDir
     
     $decoded = DecodeSaltedString $decryptionKey.data
     $keyKey = DeriveKeyPbkdf2 $masterPassword $decoded.Salt 100000
@@ -182,15 +188,38 @@ function DecryptItem
     $login.Password
 }
 
+function Set-1PDefaultDirectory
+{
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateScript({Test-Path $_ -PathType Container})]
+        [string] $Path
+    )
+
+    $script:1PasswordRoot = $Path
+}
+
+function Get-1PDefaultDirectory
+{
+    $script:1PasswordRoot
+}
+
 function Unprotect-1PEntry
 {
     param(
+        [Parameter(Mandatory = $true)]
         [string] $Name,
-        [switch] $PassOnly,
-        [string] $1PasswordRoot = ("${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default")
+
+        [PSCredential] $Credential = ($null),
+
+        [switch] $PasswordOnly,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateScript({Test-Path $_ -PathType Container})]
+        [string] $1PasswordRoot = ($script:1PasswordRoot)
     )
 
-    $contents = GetContents
+    $contents = GetContents $1PasswordRoot
 
     $item = $contents |?{ $_.Name -like $name }
 
@@ -203,15 +232,20 @@ function Unprotect-1PEntry
     if(@($item).Length -gt 1)
     {
         Write-Error "More than one entry matches ${name}: $(($item |% Name) -join ',')"
+        return
     }
 
-    $pass = Read-Host "1Password master password" -AsSecureString
+    $plainPass =
+        if($credential -eq $null) {
+            $securePass = Read-Host "1Password master password" -AsSecureString
+            (New-Object PSCredential @('1poshword', $securePass)).GetNetworkCredential().Password
+        } else {
+            $credential.GetNetworkCredential().Password
+        }
 
-    $script:1PasswordRoot = $1PasswordRoot
-
-    DecryptItem $item.ID $pass -PassOnly:$passOnly.IsPresent
+    DecryptItem $item.ID $plainPass -PassOnly:$passwordOnly.IsPresent $1passwordRoot
 }
 
 New-Alias -Name 1p -Value Unprotect-1PEntry
 
-Export-ModuleMember -Function 'Unprotect-1PEntry' -Alias '1p'
+Export-ModuleMember -Function 'Unprotect-1PEntry','Get-1PDefaultDirectory','Set-1PDefaultDirectory' -Alias '1p'
