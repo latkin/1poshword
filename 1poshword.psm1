@@ -148,7 +148,7 @@ function GetContents
     }
 }
 
-function GetLoginFromDecryptedJson
+function GetPayloadFromDecryptedJson
 {
     param(
         [string] $Json,
@@ -157,20 +157,38 @@ function GetLoginFromDecryptedJson
     
     $item = $json | ConvertFrom-Json
     
-    if($typeName -eq 'webforms.WebForm'){
-        Set-StrictMode -Off
-        $password = $item.fields |?{ $_.designation -eq 'password' } |%{ $_.value }
-        $username = $item.fields |?{ $_.designation -eq 'username' } |%{ $_.value }
-        [PSCustomObject]@{
-            Username = $username
-            Password = $password
+    switch($typeName) {
+        'webforms.WebForm' {
+            Set-StrictMode -Off
+            $password = $item.fields |?{ $_.designation -eq 'password' } |%{ $_.value }
+            $username = $item.fields |?{ $_.designation -eq 'username' } |%{ $_.value }
+            [PSCustomObject] @{
+                Username = $username
+                Password = $password
+                Text = $null
+            }
+            Set-StrictMode -Version 2
         }
-        Set-StrictMode -Version 2
-    } elseif($typeName -eq 'passwords.Password') {
-        [PSCustomObject]@{
-            UserName = $null
-            Password = $item.password
+        'passwords.Password' {
+            [PSCustomObject] @{
+                UserName = $null
+                Password = $item.password
+                Text = $null
+            }
         }
+        'securenotes.SecureNote' {
+            [PSCustomObject] @{
+                Type = $typeName
+                UserName = $null
+                Password = $null
+                Text = $item.notesPlain
+            }
+        }
+        default {
+            Write-Error "Entry type $typeName is not supported"
+            exit
+        }
+
     }
 }
 
@@ -199,12 +217,7 @@ function DecryptItem
     $finalKey = DeriveKeyOpenSSL $dataKey $dataDecoded.Salt
     $finalData = AESDecrypt $dataDecoded.Data $finalKey.Key $finalKey.IV
 
-    $login = GetLoginFromDecryptedJson ([system.text.encoding]::UTF8.GetString($finalData).Trim() -replace '\p{C}+$','') $itemJson.typeName
-    
-    [PSCustomObject]@{
-        Username = $login.Username
-        Password = $login.Password
-    }
+    GetPayloadFromDecryptedJson ([system.text.encoding]::UTF8.GetString($finalData).Trim() -replace '\p{C}+$','') $itemJson.typeName
 }
 
 function Set-1PDefaultDirectory
@@ -275,13 +288,23 @@ function Unprotect-1PEntry
     $result =
         switch($psCmdlet.ParameterSetName) {
             'plain' {
-                $decrypted.Username
-                $decrypted.Password
+                if($decrypted.Type -eq 'securenotes.SecureNote') {
+                    $decrypted.Text
+                } else {
+                    $decrypted.Username
+                    $decrypted.Password
+                }
             }
             'passwordonly' {
+                if($decrypted.Password -eq $null) {
+                    Write-Error "'PasswordOnly' not supported for $($decrypted.Type)"
+                }
                 $decrypted.Password
             }
             'ascredential' {
+                if($decrypted.Password -eq $null) {
+                    Write-Error "'AsCredential' not supported for $($decrypted.Type)"
+                }
                 $securePass = New-Object SecureString
                 $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
                 New-Object PSCredential @($decrypted.Username, $securePass)
