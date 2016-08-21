@@ -159,7 +159,6 @@ function DecryptItem
     param(
         [string] $ItemID,
         [string] $MasterPassword,
-        [switch] $PassOnly,
         [string] $RootDir
     )
     
@@ -182,10 +181,10 @@ function DecryptItem
 
     $login = GetLoginFromDecryptedJson ([system.text.encoding]::UTF8.GetString($finalData).Trim() -replace '\p{C}+$','') $itemJson.typeName
     
-    if(-not $passOnly){
-        $login.Username
+    [PSCustomObject]@{
+        Username = $login.Username
+        Password = $login.Password
     }
-    $login.Password
 }
 
 function Set-1PDefaultDirectory
@@ -204,15 +203,23 @@ function Get-1PDefaultDirectory
     $script:1PasswordRoot
 }
 
+Add-Type -TypeDefinition 'public enum OnePoshwordOutputFormat {
+     All,
+     PasswordOnly,
+     PSCredential
+}'
+
 function Unprotect-1PEntry
 {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Name,
 
+        [Parameter(Mandatory = $false)]
         [PSCredential] $Credential = ($null),
 
-        [switch] $PasswordOnly,
+        [Parameter(Mandatory = $false)]
+        [OnePoshwordOutputFormat] $OutputFormat = ('All'),
 
         [Parameter(Mandatory = $false)]
         [ValidateScript({Test-Path $_ -PathType Container})]
@@ -243,7 +250,22 @@ function Unprotect-1PEntry
             $credential.GetNetworkCredential().Password
         }
 
-    DecryptItem $item.ID $plainPass -PassOnly:$passwordOnly.IsPresent $1passwordRoot
+    $decrypted = DecryptItem $item.ID $plainPass $1passwordRoot
+
+    switch($outputFormat) {
+        'All' {
+            $decrypted.Username
+            $decrypted.Password
+        }
+        'PasswordOnly' {
+            $decrypted.Password
+        }
+        'PSCredential' {
+            $securePass = New-Object SecureString
+            $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
+            New-Object PSCredential @($decrypted.Username, $securePass)
+        }
+    }
 }
 
 New-Alias -Name 1p -Value Unprotect-1PEntry
