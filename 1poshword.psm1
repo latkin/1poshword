@@ -203,23 +203,21 @@ function Get-1PDefaultDirectory
     $script:1PasswordRoot
 }
 
-Add-Type -TypeDefinition 'public enum OnePoshwordOutputFormat {
-     All,
-     PasswordOnly,
-     PSCredential
-}'
-
 function Unprotect-1PEntry
 {
+    [CmdletBinding(DefaultParameterSetName = 'plain')]
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, Position = 0)]
         [string] $Name,
 
         [Parameter(Mandatory = $false)]
         [PSCredential] $Credential = ($null),
 
-        [Parameter(Mandatory = $false)]
-        [OnePoshwordOutputFormat] $OutputFormat = ('All'),
+        [Parameter(Mandatory = $false, ParameterSetName = 'ascredential')]
+        [switch] $AsCredential,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'passwordonly')]
+        [switch] $PasswordOnly,
 
         [Parameter(Mandatory = $false)]
         [ValidateScript({Test-Path $_ -PathType Container})]
@@ -252,15 +250,15 @@ function Unprotect-1PEntry
 
     $decrypted = DecryptItem $item.ID $plainPass $1passwordRoot
 
-    switch($outputFormat) {
-        'All' {
+    switch($psCmdlet.ParameterSetName) {
+        'plain' {
             $decrypted.Username
             $decrypted.Password
         }
-        'PasswordOnly' {
+        'passwordonly' {
             $decrypted.Password
         }
-        'PSCredential' {
+        'ascredential' {
             $securePass = New-Object SecureString
             $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
             New-Object PSCredential @($decrypted.Username, $securePass)
