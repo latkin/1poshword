@@ -190,7 +190,6 @@ function GetPayloadFromDecryptedJson
             Write-Error "Entry type $typeName is not supported"
             exit
         }
-
     }
 }
 
@@ -208,12 +207,19 @@ function DecryptItem
     $keyId = $itemJson.KeyID
     $securityLevel = $itemJson.securityLevel
     Set-StrictMode -Version 2
-    
+
     $decryptionKey = GetDecryptionKey $keyId $securityLevel $rootDir
-    
+
     $decoded = DecodeSaltedString $decryptionKey.data
     $keyKey = DeriveKeyPbkdf2 $masterPassword $decoded.Salt 100000
     $dataKey = AESDecrypt $decoded.Data $keyKey.Key $keyKey.IV
+
+    $decodedValidation = DecodeSaltedString $decryptionkey.validation
+    $validationKey = DeriveKeyOpenSSL $dataKey $decodedValidation.Salt
+    $finalValidation = AESDecrypt $decodedValidation.Data $validationKey.Key $validationKey.IV
+    if(Compare-Object $finalValidation $dataKey){
+        Write-Error "Unable to validate master password"
+    }
 
     $dataDecoded = DecodeSaltedString $itemJson.encrypted
     $finalKey = DeriveKeyOpenSSL $dataKey $dataDecoded.Salt
