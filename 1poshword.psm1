@@ -55,14 +55,14 @@ function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
     $decryptor = $aes.CreateDecryptor($key, $iv)
     $memStream = New-Object System.IO.MemoryStream @(,$data)
     $cryptStream = New-Object System.Security.Cryptography.CryptoStream $memStream,$decryptor,'Read'
-
     $result = $(
         $b = $cryptStream.ReadByte()
         while ($b -ne -1) {
             $b
             $b = $cryptStream.ReadByte()
         }
-    )    
+    )
+
     $cryptStream.Dispose()
     $memStream.Dispose()
     $decryptor.Dispose()
@@ -117,7 +117,7 @@ function GetPayloadFromDecryptedEntry([string] $EntryJson, [string] $TypeName) {
             Write-Error "Entry type $typeName is not supported"
         }
     }
-    
+
     [PSCustomObject] @{
         Type = $typeName
         Username = $username
@@ -128,7 +128,7 @@ function GetPayloadFromDecryptedEntry([string] $EntryJson, [string] $TypeName) {
 
 function Decrypt([string] $Data, [object] $Key, [int] $Iterations, [switch] $MD5, [switch] $Pbkdf2) {
     $decoded = DecodeSaltedString $data
-    $finalKey =
+    $finalKey = 
         if ($md5) {
             DeriveKeyMD5 ([byte[]] $key) $decoded.Salt
         } elseif ($pbkdf2) {
@@ -138,9 +138,7 @@ function Decrypt([string] $Data, [object] $Key, [int] $Iterations, [switch] $MD5
     AESDecrypt $decoded.Data $finalKey.Key $finalKey.IV
 }
 
-function DecryptEntry([string] $EntryId, [string] $MasterPassword, [string] $RootDir) {
-    $entry = cat "$rootDir\$entryId.1password" | ConvertFrom-Json
-
+function DecryptEntry([PSObject] $Entry, [string] $MasterPassword, [string] $RootDir) {
     Set-StrictMode -Off
     $keyId = $entry.KeyId
     $securityLevel = $entry.securityLevel
@@ -150,14 +148,13 @@ function DecryptEntry([string] $EntryId, [string] $MasterPassword, [string] $Roo
 
     $dataKey = Decrypt -Pbkdf2 $decryptionKey.data $masterPassword $decryptionKey.Iterations
     $dataKeyCheck = Decrypt -MD5 $decryptionkey.validation $dataKey
-
     if (Compare-Object $dataKey $dataKeyCheck) {
         Write-Error "Unable to validate master password"
     }
 
-    $data = Decrypt -MD5 $entry.encrypted $dataKey
-
-    GetPayloadFromDecryptedEntry ([system.text.encoding]::UTF8.GetString($data).Trim() -replace '\p{C}+$','') $entry.typeName
+    $entryBytes = Decrypt -MD5 $entry.encrypted $dataKey
+    $entryString = [System.Text.Encoding]::UTF8.GetString($entryBytes).Trim() -replace '\p{C}+$'
+    GetPayloadFromDecryptedEntry $entryString $entry.typeName
 }
 
 function Set-1PDefaultDirectory {
@@ -175,37 +172,42 @@ function Get-1PDefaultDirectory {
 }
 
 function Unprotect-1PEntry {
-    [CmdletBinding(DefaultParameterSetName = 'plain')]
+    [CmdletBinding(DefaultParameterSetName = 'Plain')]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
         [string] $Name,
 
         [PSCredential] $Credential = ($null),
 
-        [Parameter(ParameterSetName = 'ascredential')]
+        [Parameter(ParameterSetName = 'AsCredential')]
         [switch] $AsCredential,
 
-        [Parameter(ParameterSetName = 'passwordonly')]
+        [Parameter(ParameterSetName = 'PasswordOnly')]
         [switch] $PasswordOnly,
 
-        [Parameter(ParameterSetName = 'plain')]
-        [Parameter(ParameterSetName = 'passwordonly')]
+        [Parameter(ParameterSetName = 'Plain')]
+        [Parameter(ParameterSetName = 'PasswordOnly')]
         [switch] $ToClipboard,
 
         [ValidateScript({Test-Path $_ -PathType Container})]
         [string] $1PasswordRoot = ($script:1PasswordRoot)
     )
 
-    $entries = GetEntries $1PasswordRoot
+    $paramSet = $psCmdlet.ParameterSetName
+    $entryInfo = GetEntries $1PasswordRoot |? Name -like $name
 
-    $entry = $entries |? Name -like $name
-
-    if (-not $entry) {
+    if (-not $entryInfo) {
         Write-Error "Unable to find entry matching $name"
     }
 
-    if (@($entry).Length -gt 1) {
-        Write-Error "More than one entry matches ${name}: $(($entry |% Name) -join ',')"
+    if (@($entryInfo).Length -gt 1) {
+        Write-Error "More than one entry matches ${name}: $(($entryInfo |% Name) -join ',')"
+    }
+
+    $entry = cat "$1PasswordRoot\$($entryInfo.Id).1password" | ConvertFrom-Json
+
+    if ($paramSet -match 'PasswordOnly|AsCredential' -and $entry.typeName -match 'SecureNote') {
+        Write-Error "$paramSet not supported for $($entry.typeName)"
     }
 
     $plainPass =
@@ -216,27 +218,19 @@ function Unprotect-1PEntry {
             $credential.GetNetworkCredential().Password
         }
 
-    $decrypted = DecryptEntry $entry.Id $plainPass $1passwordRoot
+    $decrypted = DecryptEntry $entry $plainPass $1passwordRoot
 
     $result =
-        switch($psCmdlet.ParameterSetName) {
-            'plain' {
+        switch($paramSet) {
+            'Plain' {
                 $decrypted.Username
                 $decrypted.Password
                 $decrypted.Text
             }
-            'passwordonly' {
-                if ($decrypted.Password -eq $null) {
-                    Write-Error "'PasswordOnly' not supported for $($decrypted.Type)"
-                }
-
+            'PasswordOnly' {
                 $decrypted.Password
             }
-            'ascredential' {
-                if ($decrypted.Password -eq $null) {
-                    Write-Error "'AsCredential' not supported for $($decrypted.Type)"
-                }
-
+            'AsCredential' {
                 $securePass = New-Object SecureString
                 $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
                 New-Object PSCredential @($decrypted.Username, $securePass)
