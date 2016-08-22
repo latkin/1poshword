@@ -5,7 +5,9 @@ $isWindows,$isOSX,$isLinux =
     if ($psVersionTable.PSVersion.Major -ge 6) { $isWindows,$isOSX,$isLinux }
     else { $true,$false,$false }
 
-$1passwordRoot = "${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default"
+$1passwordRoot =
+    if($isWindows) { "${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default" }
+    elseif($isOSX) { "${env:HOME}/Dropbox/1Password/1Password.agilekeychain/data/default"}
 
 function ClipboardCopy([string[]] $Data) {
     if ($isWindows) { $data | clip.exe }
@@ -77,7 +79,7 @@ function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
 }
 
 function GetDecryptionKey([string] $KeyId, [string] $SecurityLevel, [string] $RootDir) {
-    $keysJson = cat "$rootDir\encryptionKeys.js" | ConvertFrom-Json
+    $keysJson = cat "$rootDir/encryptionKeys.js" | ConvertFrom-Json
     if ($keyId) {
         $keysJson.list |? identifier -eq $keyId
     } else {
@@ -86,7 +88,7 @@ function GetDecryptionKey([string] $KeyId, [string] $SecurityLevel, [string] $Ro
 }
 
 function GetEntries([string] $RootDir) {
-    foreach($item in (cat "$rootDir\contents.js" | ConvertFrom-Json)) {
+    foreach($item in (cat "$rootDir/contents.js" | ConvertFrom-Json)) {
         [PSCustomObject] @{
             Id = $item[0]
             Name = $item[2]
@@ -204,7 +206,7 @@ function Unprotect-1PEntry {
         Write-Error "More than one entry matches ${name}: $(($entryInfo |% Name) -join ',')"
     }
 
-    $entry = cat "$1PasswordRoot\$($entryInfo.Id).1password" | ConvertFrom-Json
+    $entry = cat "$1PasswordRoot/$($entryInfo.Id).1password" | ConvertFrom-Json
 
     if ($paramSet -match 'PasswordOnly|AsCredential' -and $entry.typeName -match 'SecureNote') {
         Write-Error "$paramSet not supported for $($entry.typeName)"
