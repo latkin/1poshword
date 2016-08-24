@@ -157,11 +157,26 @@ function DecryptEntry([PSObject] $Entry, [string] $MasterPassword, [string] $Roo
     GetPayloadFromDecryptedEntry $entryString $entry.typeName
 }
 
+<#
+.SYNOPSIS
+Sets the default 1Password root directory to a new value.
+
+.DESCRIPTION
+Sets the default 1Password root directory to a new value. The 1Password vault at this location
+will be used by Unprotect-1PEntry unless otherwise specified.
+
+.PARAMETER Path
+Specifies the root directory of the default 1Password vault. This directory
+should contain the file encryptionKeys.js.
+
+.EXAMPLE
+PS ~$ Set-1PDefaultDirectory '/Users/calvin/1p/1Password.agilekeychain/data/default'
+#>
 function Set-1PDefaultDirectory {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateScript({Test-Path $_ -PathType Container})]
+        [ValidateScript({(Test-Path $_ -PathType Container) -and (Test-Path "$_/encryptionKeys.js")})]
         [string] $Path
     )
 
@@ -170,10 +185,91 @@ function Set-1PDefaultDirectory {
     }
 }
 
+<#
+.SYNOPSIS
+Gets the default 1Password root directory to a new value.
+
+.DESCRIPTION
+Gets the default 1Password root directory. The 1Password vault at this location
+will be used by Unprotect-1PEntry unless otherwise specified.
+
+.EXAMPLE
+PS ~$ Get-1PDefaultDirectory
+#>
 function Get-1PDefaultDirectory {
     $script:1PasswordRoot
 }
 
+<#
+.SYNOPSIS
+Decrypts a 1Password Login, Password, or Secure Note into various forms.
+
+.DESCRIPTION
+Decrypts a 1Password Login, Password, or Secure Note.
+The alias 1p is provided by default.
+Supported output formats are
+  - Plaintext to pipeline (username + password or password only)
+  - Plaintext to clipboard (username + password or password only)
+  - PSCredential
+
+.PARAMETER Name
+Specifies the name of the 1Password entry.
+A case-insensitive wildcard match is used.
+An error is thrown if no entries, or more than one entry, match the specified name.
+
+.PARAMETER Credential
+Specifies the 1Password master password.
+If no value is specified, user will be prompted to enter password interactively.
+If passing a PSCredential object, only the password field is considered.
+
+.PARAMETER AsCredential
+If specified, the resulting entry is returned as a PSCredential.
+'Login' entries will have username and password fields populated.
+'Password' entries will have the password field populated and 'none' as the username.
+'Secure Note' entries are not supported with this option and will result in an error.
+
+.PARAMETER PasswordOnly
+If specified, only the password is returned from the resulting entry.
+'Secure Note' entries are not supported with this option and will result in an error.
+
+.PARAMETER ToClipboard
+If specified, the resulting entry will be copied to the clipboard instead of returned to the pipeline.
+
+.PARAMETER 1PasswordRoot
+Specifies the root directory of the 1Password vault from which to read.
+The default root directory can be read via Get-1PDefaultDirectory, and changed via Set-1PDefaultDirectory.
+
+.EXAMPLE
+Copies GMail username and password to the clipboard.
+
+PS ~$ Unprotect-1PEntry gmail -ToClipboard
+1Password master password: **********
+PS ~$
+
+.EXAMPLE
+Pipes the system password into another command which normally prompts for a password.
+
+PS ~$ Unprotect-1PEntry system -PasswordOnly | sudo -Sk echo "`ndude, sweet"
+1Password master password: **********
+Password:
+dude, sweet
+PS ~$
+
+.EXAMPLE
+Uses a bound PSCredential object to specify the 1Password master password.
+
+PS ~$ $cred = Get-Credential
+cmdlet Get-Credential at command pipeline position 1
+Supply values for the following parameters:
+Credential
+User: dummy
+Password for user dummy: **********
+
+PS ~$ Unprotect-1PEntry myaccount -Credential $cred
+myusername
+myp@ssw0rd
+PS ~$
+#>
 function Unprotect-1PEntry {
     [CmdletBinding(DefaultParameterSetName = 'Plain')]
     param(
@@ -236,7 +332,8 @@ function Unprotect-1PEntry {
             'AsCredential' {
                 $securePass = New-Object SecureString
                 $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
-                New-Object PSCredential @($decrypted.Username, $securePass)
+                $username = if ($decrypted.Username) { $decrypted.Username } else { 'none' }
+                New-Object PSCredential @($username, $securePass)
             }
         }
 
