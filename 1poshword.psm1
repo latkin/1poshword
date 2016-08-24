@@ -12,7 +12,7 @@ $1passwordRoot =
 function ClipboardCopy([string[]] $Data) {
     if ($isWindows) { $data | clip.exe }
     elseif ($isOSX) { $data | pbcopy }
-    elseif ($isLinux -and (gcm xclip)) { $data | xclip }
+    elseif ($isLinux -and (Get-Command xclip)) { $data | xclip }
     else { Write-Error "Unable to locate clipboard utility" }
 }
 
@@ -79,7 +79,7 @@ function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
 }
 
 function GetDecryptionKey([string] $KeyId, [string] $SecurityLevel, [string] $RootDir) {
-    $keysJson = cat "$rootDir/encryptionKeys.js" | ConvertFrom-Json
+    $keysJson = Get-Content "$rootDir/encryptionKeys.js" | ConvertFrom-Json
     if ($keyId) {
         $keysJson.list |? identifier -eq $keyId
     } else {
@@ -88,7 +88,7 @@ function GetDecryptionKey([string] $KeyId, [string] $SecurityLevel, [string] $Ro
 }
 
 function GetEntries([string] $RootDir) {
-    foreach($item in (cat "$rootDir/contents.js" | ConvertFrom-Json)) {
+    foreach($item in (Get-Content "$rootDir/contents.js" | ConvertFrom-Json)) {
         [PSCustomObject] @{
             Id = $item[0]
             Name = $item[2]
@@ -160,13 +160,16 @@ function DecryptEntry([PSObject] $Entry, [string] $MasterPassword, [string] $Roo
 }
 
 function Set-1PDefaultDirectory {
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
         [ValidateScript({Test-Path $_ -PathType Container})]
         [string] $Path
     )
 
-    $script:1PasswordRoot = $Path
+    if ($psCmdlet.ShouldProcess($path)) {
+        $script:1PasswordRoot = $path
+    }
 }
 
 function Get-1PDefaultDirectory {
@@ -179,7 +182,7 @@ function Unprotect-1PEntry {
         [Parameter(Mandatory = $true, Position = 0)]
         [string] $Name,
 
-        [PSCredential] $Credential = ($null),
+        [PSCredential] [System.Management.Automation.Credential()] $Credential = ($null),
 
         [Parameter(ParameterSetName = 'AsCredential')]
         [switch] $AsCredential,
@@ -206,14 +209,14 @@ function Unprotect-1PEntry {
         Write-Error "More than one entry matches ${name}: $(($entryInfo |% Name) -join ',')"
     }
 
-    $entry = cat "$1PasswordRoot/$($entryInfo.Id).1password" | ConvertFrom-Json
+    $entry = Get-Content "$1PasswordRoot/$($entryInfo.Id).1password" | ConvertFrom-Json
 
     if ($paramSet -match 'PasswordOnly|AsCredential' -and $entry.typeName -match 'SecureNote') {
         Write-Error "$paramSet not supported for $($entry.typeName)"
     }
 
     $plainPass =
-        if ($credential -eq $null) {
+        if ($null -eq $credential) {
             $securePass = Read-Host "1Password master password" -AsSecureString
             (New-Object PSCredential @('1poshword', $securePass)).GetNetworkCredential().Password
         } else {
