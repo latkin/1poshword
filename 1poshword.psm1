@@ -5,9 +5,7 @@ $isWindows,$isOSX,$isLinux =
     if ($psVersionTable.PSVersion.Major -ge 6) { $isWindows,$isOSX,$isLinux }
     else { $true,$false,$false }
 
-$1passwordRoot =
-    if($isWindows) { "${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default" }
-    else { "${env:HOME}/Dropbox/1Password/1Password.agilekeychain/data/default" }
+$1passwordRoot = "$(if($isWindows){$env:USERPROFILE}else{$env:HOME})/Dropbox/1Password/1Password.agilekeychain/data/default"
 
 function ClipboardCopy([string[]] $Data) {
     if ($isWindows) { $data | clip.exe }
