@@ -7,12 +7,12 @@ $isWindows,$isOSX,$isLinux =
 
 $1passwordRoot =
     if($isWindows) { "${env:userprofile}\Dropbox\1Password\1Password.agilekeychain\data\default" }
-    elseif($isOSX) { "${env:HOME}/Dropbox/1Password/1Password.agilekeychain/data/default"}
+    else { "${env:HOME}/Dropbox/1Password/1Password.agilekeychain/data/default" }
 
 function ClipboardCopy([string[]] $Data) {
     if ($isWindows) { $data | clip.exe }
     elseif ($isOSX) { $data | pbcopy }
-    elseif ($isLinux -and (Get-Command xclip)) { $data | xclip }
+    elseif ($isLinux -and (Get-Command xclip -ea 0)) { $data | xclip -selection clipboard }
     else { Write-Error "Unable to locate clipboard utility" }
 }
 
