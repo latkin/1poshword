@@ -93,7 +93,7 @@ function DeriveKeyMD5([byte[]] $Key, [byte[]] $Salt) {
 
     [PSCustomObject] @{
          Key = $keyData[0 .. 15]
-         IV = $keyData[16 .. 31]
+         Aux = $keyData[16 .. 31]
     }
 }
 
@@ -128,7 +128,7 @@ function DecryptOPVaulOPData([string] $Data, [PSObject] $Key) {
     $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First (32 + $padLength + $dataLen)))
     $declaredHash = $dataBytes | Select-Object -Skip (32 + $padLength + $dataLen)
     if (Compare-Object $computedHash $declaredHash) {
-        Write-Error "Hash verification failed"
+        Write-Error "Unable to validate master password"
     }
     $iv = $dataBytes[16..31]
     $encryptedBytes = $dataBytes | Select-Object -Skip 32 | Select-Object -First ($dataLen + $padLength)
@@ -142,7 +142,7 @@ function DecryptOPVaultItemKey([string] $Data, [PSObject] $Key) {
     $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First 80))
     $declaredHash = $dataBytes | Select-Object -Last 32
     if (Compare-Object $computedHash $declaredHash) {
-        Write-Error "Hash verification failed"
+        Write-Error "Unable to validate master password"
     }
 
     AESDecrypt $encryptedKey $key.Key $iv
@@ -157,7 +157,7 @@ function GetOPVaultKeyFromBytes([byte[]] $Bytes) {
 }
 
 function PickDecryptionKey([Entry] $Entry) {
-    $keys = Get-Content "$($entry.VaultPath)/encryptionKeys.js" | ConvertFrom-Json |% List
+    $keys = Get-Content "$($entry.VaultPath)/data/default/encryptionKeys.js" | ConvertFrom-Json |% List
     if ($entry.KeyId) { $keys |? Identifier -eq $entry.KeyId }
     else { $keys |? Level -eq $entry.SecurityLevel }
 }
@@ -217,6 +217,23 @@ function DecryptEntry([Entry] $Entry, [securestring] $Password) {
 
     $entryBytes = Decrypt -MD5 $entry.EncryptedData $dataKey
     $entryString = [System.Text.Encoding]::UTF8.GetString($entryBytes).Trim() -replace '\p{C}+$'
+    GetPayloadFromDecryptedEntry $entryString $entry
+}
+
+function DecryptOPVaultEntry([Entry] $Entry, [securestring] $Password) {
+    $vaultProfile = ((Get-Content "$($entry.VaultPath)/default/profile.js") -replace '^var profile=(.+);$','$1') | ConvertFrom-Json
+    $plainPass = SecureString2String $password
+    $derivedKey = DeriveKeyPbkdf2 $plainPass ([Convert]::FromBase64String($vaultProfile.Salt)) $vaultProfile.Iterations 64 'SHA512'
+    $encryptionKeyData = DecryptOPVaulOPData $vaultProfile.MasterKey $derivedKey
+    $encryptionKey = GetOPVaultKeyFromBytes $encryptionKeyData
+    $itemKeyBytes = DecryptOPVaultItemKey $entry.KeyData $encryptionKey
+    $itemKey = [PSCustomObject] @{
+        Key = $itemKeyBytes | Select-Object -First 32
+        Aux = $itemKeyBytes | Select-Object -Last 32
+    }
+
+    $entryBytes = DecryptOPVaulOPData $entry.EncryptedData $itemKey
+    $entryString = [System.Text.Encoding]::UTF8.GetString($entryBytes)
     GetPayloadFromDecryptedEntry $entryString $entry
 }
 
@@ -287,7 +304,7 @@ function Set-1PDefaultVaultPath {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateScript({(Test-Path $_ -PathType Container) -and (Test-Path "$_/encryptionKeys.js")})]
+        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)$') })]
         [string] $Path
     )
 
@@ -319,6 +336,7 @@ function Get-1PEntry {
         [Parameter(Position = 1)]
         [SecureString] $Password,
 
+        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)$') })]
         [string] $VaultPath = ($script:DefaultVaultPath)
     )
 
@@ -418,6 +436,7 @@ function Unprotect-1PEntry {
 
         [Parameter(ParameterSetName = 'Name/Secure')]
         [Parameter(ParameterSetName = 'Name/Plain')]
+        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)$') })]
         [string] $VaultPath = ($script:DefaultVaultPath),
 
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Secure')]
@@ -438,9 +457,13 @@ function Unprotect-1PEntry {
     )
 
     $paramSet = $psCmdlet.ParameterSetName
+    $opVault = ($name -and ($vaultPath -match '\.opvault$')) -or ($entry -and $entry.KeyData)
     $entries = $null
     if ($name) {
-        $entries = Get-1PEntry -Name $name -VaultPath $vaultPath
+        if ($opVault -and (-not $password)) {
+            $password = Read-Host -AsSecureString -Prompt "1Password master password"
+        }
+        $entries = Get-1PEntry -Name $name -VaultPath $vaultPath -Password $password
     }
     if (-not $entries) {
         Write-Error "No 1Password entries found with name $name"
@@ -450,14 +473,19 @@ function Unprotect-1PEntry {
     }
 
     $entry = $entries
-    if ($entry.Type -match 'SecureNote' -and $passwordOnly) {
+    if ($entry.Type -eq 'SecureNote' -and $passwordOnly) {
         Write-Error "PasswordOnly not supported for Secure Notes"
     }
     if(-not $password){
         $password = Read-Host -AsSecureString -Prompt "1Password master password"
     }
 
-    $decrypted = DecryptEntry $entry $password
+    $decrypted =
+        if ($opVault) {
+            DecryptOPVaultEntry $entry $password
+        } else {
+            DecryptEntry $entry $password
+        }
     switch -regex ($paramSet) {
         'Secure' {
             if ($decrypted.SecureNote) {
