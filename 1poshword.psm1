@@ -1,17 +1,49 @@
 #Requires -Version 3
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
-$isWindows,$isOSX,$isLinux = 
-    if ($psVersionTable.PSVersion.Major -ge 6) { $isWindows,$isOSX,$isLinux }
-    else { $true,$false,$false }
+$home = if($env:USERPROFILE){ $env:USERPROFILE } else { $env:HOME }
+$DefaultVaultPath = "$home/Dropbox/1Password/1Password.agilekeychain/data/default"
 
-$1passwordRoot = "$(if($isWindows){$env:USERPROFILE}else{$env:HOME})/Dropbox/1Password/1Password.agilekeychain/data/default"
+if($PSVersionTable.PSVersion -lt '5.0.0') {
+    Add-Type -ea 0 @'
+    public class Entry {
+        public string Name;
+        public string Id;
+        public string VaultPath;
+        public string LocationKey;
+        public string SecurityLevel;
+        public string KeyId;
+        public string Location;
+        public string Type;
+        public System.DateTime CreatedAt;
+        public System.DateTime LastUpdated;
+        public System.DateTime? LastUsed;
+        public string EncryptedData;
+        public override string ToString() {
+            return Name;
+        }
+    }
+'@
+} else {
+    class Entry {
+        [string] $Name
+        [string] $Id
+        [string] $VaultPath
+        [string] $LocationKey
+        [string] $SecurityLevel
+        [string] $KeyId
+        [string] $Location
+        [string] $Type
+        [DateTime] $CreatedAt
+        [DateTime] $LastUpdated
+        [Nullable[DateTime]] $LastUsed
+        [string] $EncryptedData
+        [string] ToString() { return $this.Name }
+    }
+}
 
-function ClipboardCopy([string[]] $Data) {
-    if ($isWindows) { $data | clip.exe }
-    elseif ($isOSX) { $data | pbcopy }
-    elseif ($isLinux -and (Get-Command xclip -ea 0)) { $data | xclip -selection clipboard }
-    else { Write-Error "Unable to locate clipboard utility" }
+function epoch([uint64] $Seconds) {
+    (New-Object DateTime @(1970,1,1,0,0,0,0,'Utc')).AddSeconds($seconds).ToLocalTime()
 }
 
 function DecodeSaltedString([string] $EncodedString) {
@@ -49,8 +81,6 @@ function DeriveKeyMD5([byte[]] $Key, [byte[]] $Salt) {
 
 function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
     $aes = [System.Security.Cryptography.Aes]::Create()
-    $aes.Key = $key
-    $aes.IV = $iv
     $aes.Padding = 'None'
     $decryptor = $aes.CreateDecryptor($key, $iv)
     $memStream = New-Object System.IO.MemoryStream @(,$data)
@@ -76,42 +106,30 @@ function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
     }
 }
 
-function GetDecryptionKey([string] $KeyId, [string] $SecurityLevel, [string] $RootDir) {
-    $keysJson = Get-Content "$rootDir/encryptionKeys.js" | ConvertFrom-Json
-    if ($keyId) {
-        $keysJson.list |? identifier -eq $keyId
-    } else {
-        $keysJson.list |? level -eq $securityLevel
-    }
+function PickDecryptionKey([Entry] $Entry) {
+    $keys = Get-Content "$($entry.VaultPath)/encryptionKeys.js" | ConvertFrom-Json |% List
+    if ($entry.KeyId) { $keys |? Identifier -eq $entry.KeyId }
+    else { $keys |? Level -eq $entry.SecurityLevel }
 }
 
-function GetEntries([string] $RootDir) {
-    foreach($item in (Get-Content "$rootDir/contents.js" | ConvertFrom-Json)) {
-        [PSCustomObject] @{
-            Id = $item[0]
-            Name = $item[2]
-        }
-    }
-}
-
-function GetPayloadFromDecryptedEntry([string] $EntryJson, [string] $TypeName) {
-    $entry = $entryJson | ConvertFrom-Json
+function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
+    $decryptedEntry = $decryptedJson | ConvertFrom-Json
     $username = $null
     $password = $null
     $text = $null
 
-    switch($typeName) {
+    switch($entry.Type) {
         'webforms.WebForm' {
             Set-StrictMode -Off
-            $password = $entry.fields |? designation -eq 'password' |% value
-            $username = $entry.fields |? designation -eq 'username' |% value
+            $password = $decryptedEntry.fields |? Designation -eq 'password' |% Value
+            $username = $decryptedEntry.fields |? Designation -eq 'username' |% Value
             Set-StrictMode -Version 2
         }
         'passwords.Password' {
-            $password = $entry.password
+            $password = $decryptedEntry.password
         }
         'securenotes.SecureNote' {
-            $text = $entry.notesPlain
+            $text = $decryptedEntry.notesPlain
         }
         default {
             Write-Error "Entry type $typeName is not supported"
@@ -119,10 +137,9 @@ function GetPayloadFromDecryptedEntry([string] $EntryJson, [string] $TypeName) {
     }
 
     [PSCustomObject] @{
-        Type = $typeName
         Username = $username
         Password = $password
-        Text = $text
+        SecureNote = $text
     }
 }
 
@@ -132,47 +149,66 @@ function Decrypt([string] $Data, [object] $Key, [int] $Iterations, [switch] $MD5
         if ($md5) {
             DeriveKeyMD5 ([byte[]] $key) $decoded.Salt
         } elseif ($pbkdf2) {
-            DeriveKeyPbkdf2 ([string] $key) $decoded.Salt $iterations
+            $plainPass = (New-Object PSCredential @('1Poshword', $password)).GetNetworkCredential().Password
+            DeriveKeyPbkdf2 $plainPass $decoded.Salt $iterations
         }
 
     AESDecrypt $decoded.Data $finalKey.Key $finalKey.IV
 }
 
-function DecryptEntry([PSObject] $Entry, [string] $MasterPassword, [string] $RootDir) {
-    Set-StrictMode -Off
-    $keyId = $entry.KeyId
-    $securityLevel = $entry.securityLevel
-    Set-StrictMode -Version 2
+function DecryptEntry([Entry] $Entry, [securestring] $Password) {
+    $decryptionKey = PickDecryptionKey $entry
 
-    $decryptionKey = GetDecryptionKey $keyId $securityLevel $rootDir
-
-    $dataKey = Decrypt -Pbkdf2 $decryptionKey.data $masterPassword $decryptionKey.Iterations
-    $dataKeyCheck = Decrypt -MD5 $decryptionkey.validation $dataKey
+    $dataKey = Decrypt -Pbkdf2 $decryptionKey.Data $password $decryptionKey.Iterations
+    $dataKeyCheck = Decrypt -MD5 $decryptionkey.Validation $dataKey
     if (Compare-Object $dataKey $dataKeyCheck) {
         Write-Error "Unable to validate master password"
     }
 
-    $entryBytes = Decrypt -MD5 $entry.encrypted $dataKey
+    $entryBytes = Decrypt -MD5 $entry.EncryptedData $dataKey
     $entryString = [System.Text.Encoding]::UTF8.GetString($entryBytes).Trim() -replace '\p{C}+$'
-    GetPayloadFromDecryptedEntry $entryString $entry.typeName
+    GetPayloadFromDecryptedEntry $entryString $entry
+}
+
+function GetEntries([string] $VaultPath, [string] $name) {
+    $contents = Get-Content "$vaultPath/contents.js" | ConvertFrom-Json
+    $entryIds = $contents |? { $_[2] -like $name } |% { $_[0] }
+    Set-StrictMode -Off
+    $entryIds |%{ Get-ChildItem "$vaultPath/$_.1password" } | Get-Content | ConvertFrom-Json |% {
+        [Entry] @{
+            Name = $_.Title
+            Id = $_.Uuid
+            VaultPath = $vaultPath
+            LocationKey = $_.LocationKey
+            SecurityLevel = $_.SecurityLevel
+            KeyId = $_.KeyId
+            Location = $_.Location
+            CreatedAt = (epoch $_.CreatedAt)
+            Type = $_.TypeName
+            LastUpdated = (epoch $_.UpdatedAt)
+            EncryptedData = $_.Encrypted
+            LastUsed = if($_.TxTimestamp){ epoch $_.TxTimestamp } else { $null }
+        }
+    }
+    Set-StrictMode -Version 2
 }
 
 <#
 .SYNOPSIS
-Sets the default 1Password root directory to a new value.
+Sets the default 1Password vault directory to a new value.
 
 .DESCRIPTION
-Sets the default 1Password root directory to a new value. The 1Password vault at this location
-will be used by Unprotect-1PEntry unless otherwise specified.
+Sets the default 1Password vault directory to a new value. The 1Password vault at this location
+will be used by other 1Poshword cmdlets unless otherwise specified.
 
 .PARAMETER Path
 Specifies the root directory of the default 1Password vault. This directory
 should contain the file encryptionKeys.js.
 
 .EXAMPLE
-PS ~$ Set-1PDefaultDirectory '/Users/calvin/1p/1Password.agilekeychain/data/default'
+PS ~$ Set-1PDefaultVaultPath '/Users/calvin/1p/1Password.agilekeychain/data/default'
 #>
-function Set-1PDefaultDirectory {
+function Set-1PDefaultVaultPath {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
@@ -181,7 +217,7 @@ function Set-1PDefaultDirectory {
     )
 
     if ($psCmdlet.ShouldProcess($path)) {
-        $script:1PasswordRoot = $path
+        $script:DefaultVaultPath = $path
     }
 }
 
@@ -194,10 +230,27 @@ Gets the default 1Password root directory. The 1Password vault at this location
 will be used by Unprotect-1PEntry unless otherwise specified.
 
 .EXAMPLE
-PS ~$ Get-1PDefaultDirectory
+PS ~$ Get-1PDefaultVaultPath
 #>
-function Get-1PDefaultDirectory {
-    $script:1PasswordRoot
+function Get-1PDefaultVaultPath {
+    $script:DefaultVaultPath
+}
+
+function Get-1PEntry {
+    param(
+        [Parameter(Position = 1)]
+        [string] $Name,
+
+        [string] $VaultPath = ($script:DefaultVaultPath)
+    )
+
+    if(-not $name){ $name = '*' }
+
+    $result = GetEntries $vaultPath $name
+    if((-not $result) -and ($name -notmatch '\*')) {
+        Write-Error "No 1Password entries found with name $name"
+    }
+    $result
 }
 
 <#
@@ -235,9 +288,9 @@ If specified, only the password is returned from the resulting entry.
 .PARAMETER ToClipboard
 If specified, the resulting entry will be copied to the clipboard instead of returned to the pipeline.
 
-.PARAMETER 1PasswordRoot
+.PARAMETER VaultPath
 Specifies the root directory of the 1Password vault from which to read.
-The default root directory can be read via Get-1PDefaultDirectory, and changed via Set-1PDefaultDirectory.
+The default root directory can be read via Get-1PDefaultVaultPath, and changed via Set-1PDefaultVaultPath.
 
 .EXAMPLE
 Copies GMail username and password to the clipboard.
@@ -271,76 +324,74 @@ myp@ssw0rd
 PS ~$
 #>
 function Unprotect-1PEntry {
-    [CmdletBinding(DefaultParameterSetName = 'Plain')]
+    [CmdletBinding(DefaultParameterSetName = 'Name/Secure')]
     param(
-        [Parameter(Mandatory = $true, Position = 0)]
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/Secure')]
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/Plain')]
         [string] $Name,
 
-        [PSCredential] [System.Management.Automation.Credential()] $Credential = ($null),
+        [Parameter(ParameterSetName = 'Name/Secure')]
+        [Parameter(ParameterSetName = 'Name/Plain')]
+        [string] $VaultPath = ($script:DefaultVaultPath),
 
-        [Parameter(ParameterSetName = 'AsCredential')]
-        [switch] $AsCredential,
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Secure')]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Plain')]
+        [Entry] $Entry,
 
-        [Parameter(ParameterSetName = 'PasswordOnly')]
-        [switch] $PasswordOnly,
+        [Parameter(Position = 1)]
+        [SecureString] $Password,
 
-        [Parameter(ParameterSetName = 'Plain')]
-        [Parameter(ParameterSetName = 'PasswordOnly')]
-        [switch] $ToClipboard,
+        [Parameter(ParameterSetName = 'Name/Plain')]
+        [Parameter(ParameterSetName = 'Entry/Plain')]
+        [switch] $Plaintext,
 
-        [ValidateScript({Test-Path $_ -PathType Container})]
-        [string] $1PasswordRoot = ($script:1PasswordRoot)
+        [Parameter(ParameterSetName = 'Name/Plain')]
+        [Parameter(ParameterSetName = 'Entry/Plain')]
+        [Alias('po')]
+        [switch] $PasswordOnly
     )
 
     $paramSet = $psCmdlet.ParameterSetName
-    $entryInfo = GetEntries $1PasswordRoot |? Name -like $name
-
-    if (-not $entryInfo) {
-        Write-Error "Unable to find entry matching $name"
+    $entries = $null
+    if ($name) {
+        $entries = Get-1PEntry -Name $name -VaultPath $vaultPath
+    }
+    if (-not $entries) {
+        Write-Error "No 1Password entries found with name $name"
+    }
+    if (@($entries).Length -gt 1) {
+        Write-Error "More than one entry matches ${name}: $($entries -join ', ')"
     }
 
-    if (@($entryInfo).Length -gt 1) {
-        Write-Error "More than one entry matches ${name}: $(($entryInfo |% Name) -join ',')"
+    $entry = $entries
+    if ($entry.Type -match 'SecureNote' -and $passwordOnly) {
+        Write-Error "PasswordOnly not supported for Secure Notes"
+    }
+    if(-not $password){
+        $password = Read-Host -AsSecureString -Prompt "1Password master password"
     }
 
-    $entry = Get-Content "$1PasswordRoot/$($entryInfo.Id).1password" | ConvertFrom-Json
-
-    if ($paramSet -match 'PasswordOnly|AsCredential' -and $entry.typeName -match 'SecureNote') {
-        Write-Error "$paramSet not supported for $($entry.typeName)"
-    }
-
-    $plainPass =
-        if ($null -eq $credential) {
-            $securePass = Read-Host "1Password master password" -AsSecureString
-            (New-Object PSCredential @('1poshword', $securePass)).GetNetworkCredential().Password
-        } else {
-            $credential.GetNetworkCredential().Password
-        }
-
-    $decrypted = DecryptEntry $entry $plainPass $1passwordRoot
-
-    $result =
-        switch($paramSet) {
-            'Plain' {
-                $decrypted.Username
-                $decrypted.Password
-                $decrypted.Text
-            }
-            'PasswordOnly' {
-                $decrypted.Password
-            }
-            'AsCredential' {
-                $securePass = New-Object SecureString
-                $decrypted.Password.ToCharArray() |%{ $securePass.AppendChar($_) }
-                $username = if ($decrypted.Username) { $decrypted.Username } else { 'none' }
+    $decrypted = DecryptEntry $entry $password
+    switch -regex ($paramSet) {
+        'Secure' {
+            if ($decrypted.SecureNote) {
+                ConvertTo-SecureString $decrypted.SecureNote -AsPlainText -Force
+            } else {
+                $securePass = ConvertTo-SecureString $decrypted.Password -AsPlainText -Force
+                $username = if ($decrypted.Username) { $decrypted.Username } else { '<none>' }
                 New-Object PSCredential @($username, $securePass)
             }
         }
-
-    if ($toClipboard) { ClipboardCopy $result }
-    else { $result }
+        'Plain' {
+            if(-not $passwordOnly) {
+                $decrypted.SecureNote
+                $decrypted.Username
+            }
+            $decrypted.Password
+        }
+    }
 }
 
-New-Alias -Name 1p -Value Unprotect-1PEntry
+New-Alias 1p Unprotect-1PEntry
 
-Export-ModuleMember -Function 'Unprotect-1PEntry','Get-1PDefaultDirectory','Set-1PDefaultDirectory' -Alias '1p'
+Export-ModuleMember -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry' -Alias 1p
