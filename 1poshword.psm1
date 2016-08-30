@@ -2,7 +2,12 @@
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
 $home = if($env:USERPROFILE){ $env:USERPROFILE } else { $env:HOME }
-$DefaultVaultPath = "$home/Dropbox/1Password/1Password.agilekeychain/data/default"
+$DefaultVaultPath =
+    if (Test-Path "$home/Dropbox/1Password/1Password.agilekeychain"){ "$home/Dropbox/1Password/1Password.agilekeychain" }
+    elseif (Test-Path "$home/Dropbox/1Password/1Password.opvault") { "$home/Dropbox/1Password/1Password.opvault" }
+    else { Write-Warning "Unable to auto-detect a 1Password vault location" }
+
+Add-Type -TypeDefinition ((Get-Content $psScriptRoot/pbkdf2.cs) -join "`n") -ReferencedAssemblies 'System.Security.Cryptography.Primitives.dll','System.IO'
 
 if($PSVersionTable.PSVersion -lt '5.0.0') {
     Add-Type -ea 0 @'
@@ -10,14 +15,13 @@ if($PSVersionTable.PSVersion -lt '5.0.0') {
         public string Name;
         public string Id;
         public string VaultPath;
-        public string LocationKey;
         public string SecurityLevel;
         public string KeyId;
+        public string KeyData;
         public string Location;
         public string Type;
         public System.DateTime CreatedAt;
         public System.DateTime LastUpdated;
-        public System.DateTime? LastUsed;
         public string EncryptedData;
         public override string ToString() {
             return Name;
@@ -29,14 +33,13 @@ if($PSVersionTable.PSVersion -lt '5.0.0') {
         [string] $Name
         [string] $Id
         [string] $VaultPath
-        [string] $LocationKey
         [string] $SecurityLevel
         [string] $KeyId
+        [string] $KeyData
         [string] $Location
         [string] $Type
         [DateTime] $CreatedAt
         [DateTime] $LastUpdated
-        [Nullable[DateTime]] $LastUsed
         [string] $EncryptedData
         [string] ToString() { return $this.Name }
     }
@@ -44,6 +47,19 @@ if($PSVersionTable.PSVersion -lt '5.0.0') {
 
 function epoch([uint64] $Seconds) {
     (New-Object DateTime @(1970,1,1,0,0,0,0,'Utc')).AddSeconds($seconds).ToLocalTime()
+}
+
+function SecureString2String([SecureString] $ss) {
+    (New-Object PSCredential @('xyz', $ss)).GetNetworkCredential().Password
+}
+
+function NormalizeEntryType([string] $Type) {
+    switch -regex ($type) {
+        '001|WebForm' { 'Login' }
+        '003|SecureNote' { 'SecureNote' }
+        '005|Password' { 'Password' }
+        default { $type }
+    }
 }
 
 function DecodeSaltedString([string] $EncodedString) {
@@ -54,12 +70,14 @@ function DecodeSaltedString([string] $EncodedString) {
     }
 }
 
-function DeriveKeyPbkdf2([string] $Password, [byte[]] $Salt, [int] $Iterations) {
-    $deriveBytes = New-Object System.Security.Cryptography.Rfc2898DeriveBytes $password,$salt,$iterations
-    $keyData = $deriveBytes.GetBytes(32)
+function DeriveKeyPbkdf2([string] $Password, [byte[]] $Salt, [int] $Iterations, [int] $byteCount, [string] $HashName) {
+    $passBytes = [System.Text.UTF8Encoding]::UTF8.GetBytes($password)
+    $hashAlg = Invoke-Expression "New-Object System.Security.Cryptography.HMAC$hashName"
+    $deriveBytes = New-Object Medo.Security.Cryptography.Pbkdf2 @($hashAlg, $passBytes, $salt, $iterations)
+    $keyData = $deriveBytes.GetBytes($byteCount)
     [PSCustomObject] @{
-        Key = $keyData[0 .. 15]
-        IV = $keyData[16 .. 31]
+        Key = $keyData | Select-Object -First ($byteCount / 2)
+        Aux = $keyData | Select-Object -Last ($byteCount / 2)
     }
 }
 
@@ -98,11 +116,43 @@ function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
     $decryptor.Dispose()
     $aes.Dispose()
 
-    $paddingSize = $result[-1]
-    if ($paddingSize -ge 16) {
-        $result
-    } else {
-        $result[0 .. ($result.Length - $paddingSize - 1)]
+    $result
+}
+
+function DecryptOPVaulOPData([string] $Data, [PSObject] $Key) {
+    $dataBytes = [Convert]::FromBase64String($data) 
+    $dataLen = 0
+    $mul = 1
+    $dataBytes[8..15] |% { $dataLen += $mul * $_; $mul *= 256 }
+    $padLength = 16 - ($dataLen % 16)
+    $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First (32 + $padLength + $dataLen)))
+    $declaredHash = $dataBytes | Select-Object -Skip (32 + $padLength + $dataLen)
+    if (Compare-Object $computedHash $declaredHash) {
+        Write-Error "Hash verification failed"
+    }
+    $iv = $dataBytes[16..31]
+    $encryptedBytes = $dataBytes | Select-Object -Skip 32 | Select-Object -First ($dataLen + $padLength)
+    AESDecrypt $encryptedBytes $key.Key $iv | Select-Object -Skip $padLength
+}
+
+function DecryptOPVaultItemKey([string] $Data, [PSObject] $Key) {
+    $dataBytes = [Convert]::FromBase64String($data)
+    $iv = $dataBytes[0..15]
+    $encryptedKey = $dataBytes[16..79]
+    $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First 80))
+    $declaredHash = $dataBytes | Select-Object -Last 32
+    if (Compare-Object $computedHash $declaredHash) {
+        Write-Error "Hash verification failed"
+    }
+
+    AESDecrypt $encryptedKey $key.Key $iv
+}
+
+function GetOPVaultKeyFromBytes([byte[]] $Bytes) {
+    $keyHash = [System.Security.Cryptography.SHA512]::Create().ComputeHash($bytes)
+    [PSCustomObject] @{
+        Key = $keyHash | Select-Object -First 32
+        Aux = $keyHash | Select-Object -Last 32
     }
 }
 
@@ -119,16 +169,16 @@ function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
     $text = $null
 
     switch($entry.Type) {
-        'webforms.WebForm' {
+        'Login' {
             Set-StrictMode -Off
             $password = $decryptedEntry.fields |? Designation -eq 'password' |% Value
             $username = $decryptedEntry.fields |? Designation -eq 'username' |% Value
             Set-StrictMode -Version 2
         }
-        'passwords.Password' {
+        'Password' {
             $password = $decryptedEntry.password
         }
-        'securenotes.SecureNote' {
+        'SecureNote' {
             $text = $decryptedEntry.notesPlain
         }
         default {
@@ -149,11 +199,11 @@ function Decrypt([string] $Data, [object] $Key, [int] $Iterations, [switch] $MD5
         if ($md5) {
             DeriveKeyMD5 ([byte[]] $key) $decoded.Salt
         } elseif ($pbkdf2) {
-            $plainPass = (New-Object PSCredential @('1Poshword', $password)).GetNetworkCredential().Password
-            DeriveKeyPbkdf2 $plainPass $decoded.Salt $iterations
+            $plainPass = SecureString2String $password
+            DeriveKeyPbkdf2 $plainPass $decoded.Salt $iterations 32 'SHA1'
         }
 
-    AESDecrypt $decoded.Data $finalKey.Key $finalKey.IV
+    AESDecrypt $decoded.Data $finalKey.Key $finalKey.Aux
 }
 
 function DecryptEntry([Entry] $Entry, [securestring] $Password) {
@@ -170,26 +220,51 @@ function DecryptEntry([Entry] $Entry, [securestring] $Password) {
     GetPayloadFromDecryptedEntry $entryString $entry
 }
 
-function GetEntries([string] $VaultPath, [string] $name) {
-    $contents = Get-Content "$vaultPath/contents.js" | ConvertFrom-Json
+function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
+    $contents = Get-Content "$vaultPath/data/default/contents.js" | ConvertFrom-Json
     $entryIds = $contents |? { $_[2] -like $name } |% { $_[0] }
     Set-StrictMode -Off
-    $entryIds |%{ Get-ChildItem "$vaultPath/$_.1password" } | Get-Content | ConvertFrom-Json |% {
+    $entryIds |%{ Get-ChildItem "$vaultPath/data/default/$_.1password" } | Get-Content | ConvertFrom-Json |% {
         [Entry] @{
             Name = $_.Title
             Id = $_.Uuid
             VaultPath = $vaultPath
-            LocationKey = $_.LocationKey
             SecurityLevel = $_.SecurityLevel
             KeyId = $_.KeyId
             Location = $_.Location
             CreatedAt = (epoch $_.CreatedAt)
-            Type = $_.TypeName
+            Type = (NormalizeEntryType $_.TypeName)
             LastUpdated = (epoch $_.UpdatedAt)
             EncryptedData = $_.Encrypted
-            LastUsed = if($_.TxTimestamp){ epoch $_.TxTimestamp } else { $null }
         }
     }
+    Set-StrictMode -Version 2
+}
+
+function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $Password) {
+    $vaultProfile = ((Get-Content "$vaultPath/default/profile.js") -replace '^var profile=(.+);$','$1') | ConvertFrom-Json
+    $plainPass = SecureString2String $password
+    $derivedKey = DeriveKeyPbkdf2 $plainPass ([Convert]::FromBase64String($vaultProfile.Salt)) $vaultProfile.Iterations 64 'SHA512'
+    $overviewKeyData = DecryptOPVaulOPData $vaultProfile.OverviewKey $derivedKey
+    $overviewKey = GetOPVaultKeyFromBytes $overviewKeyData
+
+    $entries = Get-ChildItem "$vaultPath/default/band_*.js" | Get-Content |% { $_ -replace '^[^:]+:(.+)}\);$', '$1' } | ConvertFrom-Json
+    Set-StrictMode -Off
+    $entries |%{
+        $entryBytes = DecryptOPVaulOPData $_.o $overviewKey
+        $entryData = [System.Text.Encoding]::UTF8.GetString($entryBytes) | ConvertFrom-Json
+        [Entry] @{
+            Name = $entryData.Title
+            Id = $_.Uuid
+            VaultPath = $vaultPath
+            Location = $entryData.Url
+            CreatedAt = (epoch $_.Created)
+            Type = (NormalizeEntryType $_.Category)
+            LastUpdated = (epoch $_.Updated)
+            EncryptedData = $_.D
+            KeyData = $_.K
+        }
+    } |? Name -like $name
     Set-StrictMode -Version 2
 }
 
@@ -238,15 +313,26 @@ function Get-1PDefaultVaultPath {
 
 function Get-1PEntry {
     param(
-        [Parameter(Position = 1)]
+        [Parameter(Position = 0)]
         [string] $Name,
+
+        [Parameter(Position = 1)]
+        [SecureString] $Password,
 
         [string] $VaultPath = ($script:DefaultVaultPath)
     )
 
     if(-not $name){ $name = '*' }
 
-    $result = GetEntries $vaultPath $name
+    $result = $null
+    if ($vaultPath -like '*.agilekeychain') {
+        $result = GetAgileKeychainEntries $vaultPath $name
+    } elseif ($vaultPath -like '*.opvault') {
+        if (-not $password) {
+            $password = Read-Host -AsSecureString -Prompt "1Password master password"
+        }
+        $result = GetOPVaultEntries $vaultPath $name $password
+    }
     if((-not $result) -and ($name -notmatch '\*')) {
         Write-Error "No 1Password entries found with name $name"
     }
