@@ -7,6 +7,45 @@ $DefaultVaultPath =
     elseif (Test-Path "$home/Dropbox/1Password/1Password.opvault") { "$home/Dropbox/1Password/1Password.opvault" }
     else { Write-Warning "Unable to auto-detect a 1Password vault location" }
 
+# Add-Type is very slow, prefer Powershell types.
+# Sadly, these declarations need to be in the primary module file
+# due to limitations on usage of Powershell types
+if($PSVersionTable.PSVersion -ge '5.0.0') {
+    class Entry {
+        [string] $Name
+        [string] $Id
+        [string] $VaultPath
+        [string] $SecurityLevel
+        [string] $KeyId
+        [string] $KeyData
+        [string] $Location
+        [string] $Type
+        [DateTime] $CreatedAt
+        [DateTime] $LastUpdated
+        [string] $EncryptedData
+        [string] ToString() { return $this.Name }
+    }
+} else {
+    Add-Type -ea 0 @'
+    public class Entry {
+        public string Name;
+        public string Id;
+        public string VaultPath;
+        public string SecurityLevel;
+        public string KeyId;
+        public string KeyData;
+        public string Location;
+        public string Type;
+        public System.DateTime CreatedAt;
+        public System.DateTime LastUpdated;
+        public string EncryptedData;
+        public override string ToString() {
+           return Name;
+        }
+     }
+'@
+}
+
 . $psScriptRoot/lib.ps1
 
 <#
@@ -295,6 +334,10 @@ function Unprotect-1PEntry {
     }
 }
 
+New-Alias g1p Get-1PEntry
 New-Alias 1p Unprotect-1PEntry
+Update-TypeData -TypeName 'Entry' -DefaultDisplayPropertySet Name,Type,LastUpdated,Location -Force
 
-Export-ModuleMember -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry' -Alias 1p
+Export-ModuleMember `
+    -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry' `
+    -Alias 'g1p','1p'
