@@ -61,40 +61,6 @@ namespace Medo.Security.Cryptography {
             this.BufferBytes = new byte[this.BlockSize];
         }
 
-        /// <summary>
-        /// Creates new instance.
-        /// </summary>
-        /// <param name="algorithm">HMAC algorithm to use.</param>
-        /// <param name="password">The password used to derive the key.</param>
-        /// <param name="salt">The key salt used to derive the key.</param>
-        /// <exception cref="System.ArgumentNullException">Algorithm cannot be null - Password cannot be null. -or- Salt cannot be null.</exception>
-        public Pbkdf2(HMAC algorithm, Byte[] password, Byte[] salt)
-            : this(algorithm, password, salt, 1000) {
-        }
-
-        /// <summary>
-        /// Creates new instance.
-        /// </summary>
-        /// <param name="algorithm">HMAC algorithm to use.</param>
-        /// <param name="password">The password used to derive the key.</param>
-        /// <param name="salt">The key salt used to derive the key.</param>
-        /// <param name="iterations">The number of iterations for the operation.</param>
-        /// <exception cref="System.ArgumentNullException">Algorithm cannot be null - Password cannot be null. -or- Salt cannot be null.</exception>
-        public Pbkdf2(HMAC algorithm, String password, String salt, Int32 iterations) :
-            this(algorithm, UTF8Encoding.UTF8.GetBytes(password), UTF8Encoding.UTF8.GetBytes(salt), iterations) {
-        }
-
-        /// <summary>
-        /// Creates new instance.
-        /// </summary>
-        /// <param name="algorithm">HMAC algorithm to use.</param>
-        /// <param name="password">The password used to derive the key.</param>
-        /// <param name="salt">The key salt used to derive the key.</param>
-        /// <exception cref="System.ArgumentNullException">Algorithm cannot be null - Password cannot be null. -or- Salt cannot be null.</exception>
-        public Pbkdf2(HMAC algorithm, String password, String salt) :
-            this(algorithm, password, salt, 1000) {
-        }
-
         private readonly int BlockSize;
         private uint BlockIndex = 1;
 
