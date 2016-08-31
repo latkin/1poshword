@@ -121,6 +121,14 @@ The default root directory can be read via Get-1PDefaultVaultPath, and changed v
 # Gets an entry by name
 
 PS ~$ Get-1PEntry email
+Name   Type  LastUpdated          Location
+----   ----  -----------          --------
+email  Login 11/30/15 12:11:50 AM https://accounts.hotg.com/ServiceLogin
+
+# show all available properties
+
+PS ~$ Get-1PEntry email | Format-List *
+
 Name          : email
 Id            : 11C5741DE2294A1EB32FB088F5838951
 VaultPath     : /Users/calvin/Dropbox/1Password/1Password.agilekeychain
@@ -134,17 +142,16 @@ LastUpdated   : 11/30/15 12:11:50 AM
 EncryptedData : U2FsdGVkX19ESuKr39T+d4185iU1NzMhKcfffu8 ...
 
 .EXAMPLE
-# Gets the list of all 1Password entries, sorted by creation time
+# Gets the list of all 1Password entries, sorted by last modified time
 
-PS ~$ Get-1PEntry | Sort-Object CreatedAt | Select-Object Name,CreatedAt,Location
+PS ~$ Get-1PEntry | Sort-Object LastUpdated
 
-Name     CreatedAt            Location
-----     ---------            --------
-Github   10/22/15 12:33:48 PM https://github.com/login
-Facebook 10/24/15 3:37:08 PM  https://www.facebook.com/login.php
-Twitter  10/26/15 8:53:36 PM  https://twitter.com/
-Linkedin 10/30/15 9:40:41 PM  https://www.linkedin.com/uas/login-submit
-Netflix  4/1/16 7:46:20 PM    https://www.netflix.com/Login
+Name     Type  LastUpdated          Location
+----     ----  -----------          --------
+Twitter  Login 11/29/15 11:53:44 PM https://twitter.com/
+Github   Login 11/29/15 11:58:12 PM https://github.com/login
+Facebook Login 11/30/15 12:02:04 AM https://www.facebook.com/login.php
+Linkedin Login 11/30/15 12:09:11 AM https://www.linkedin.com/uas/login-submit
 ...
 #>
 function Get-1PEntry {
@@ -208,6 +215,15 @@ If specified with -Plaintext, only the password field is returned from Login ent
 This parameter has no effect when returning Password entries.
 Secure Note entries are not supported with this parameter and will result in an error.
 
+.PARAMETER CopyPassword
+If specified, the password field of a Login or Password entry will be copied to the
+system clipboard. No output will be returned to the pipeline.
+Attempts to use a system clipboard utility for copying:
+  - Windows: clip.exe
+  - Mac: pbcopy
+  - Linux: xclip
+Secure Note entries are not supported with this parameter and will result in an error.
+
 .PARAMETER VaultPath
 Specifies the root directory of the 1Password vault from which to read.
 The default root directory can be read via Get-1PDefaultVaultPath, and changed via Set-1PDefaultVaultPath.
@@ -239,8 +255,7 @@ PS ~$ Get-1PEntry mynote | Unprotect-1PEntry -Plaintext | more
 .EXAMPLE
 # Copies a password to the clipboard
 
-# replace 'clip' with 'pbcopy', 'xclip', etc as appropriate
-PS ~$ Unprotect-1PEntry mylogin -PasswordOnly -Plaintext | clip
+PS ~$ Unprotect-1PEntry mylogin -CopyPassword
 1Password master password: **********
 
 .EXAMPLE
@@ -258,10 +273,12 @@ function Unprotect-1PEntry {
     param(
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/Secure')]
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/Plain')]
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/CopyPass')]
         [string] $Name,
 
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Secure')]
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Plain')]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/CopyPass')]
         [Entry] $Entry,
 
         [Parameter(Position = 1)]
@@ -276,8 +293,14 @@ function Unprotect-1PEntry {
         [Alias('po')]
         [switch] $PasswordOnly,
 
+        [Parameter(Mandatory = $true, ParameterSetName = 'Name/CopyPass')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'Entry/CopyPass')]
+        [Alias('cp')]
+        [switch] $CopyPassword,
+
         [Parameter(ParameterSetName = 'Name/Secure')]
         [Parameter(ParameterSetName = 'Name/Plain')]
+        [Parameter(ParameterSetName = 'Name/CopyPass')]
         [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)$') })]
         [string] $VaultPath = ($script:DefaultVaultPath)
     )
@@ -301,8 +324,8 @@ function Unprotect-1PEntry {
         $entry = $entries
     }
 
-    if ($entry.Type -eq 'SecureNote' -and $passwordOnly) {
-        Write-Error "PasswordOnly not supported for Secure Notes"
+    if ($entry.Type -eq 'SecureNote' -and ($passwordOnly -or $copyPassword)) {
+        Write-Error "Password-only operations are not available for Secure Notes"
     }
     if(-not $password){
         $password = Read-Host -AsSecureString -Prompt "1Password master password"
@@ -330,6 +353,9 @@ function Unprotect-1PEntry {
                 $decrypted.Username
             }
             $decrypted.Password
+        }
+        'CopyPass' {
+            ClipboardCopy $decrypted.Password
         }
     }
 }
