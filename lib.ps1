@@ -1,6 +1,3 @@
-Add-Type -TypeDefinition ((Get-Content $psScriptRoot/pbkdf2.cs) -join "`n") `
-         -ReferencedAssemblies 'System.Security.Cryptography.Primitives.dll','System.IO'
-
 function epoch([uint64] $Seconds) {
     (New-Object DateTime @(1970,1,1,0,0,0,0,'Utc')).AddSeconds($seconds).ToLocalTime()
 }
@@ -35,9 +32,16 @@ function DecodeSaltedString([string] $EncodedString) {
 
 function DeriveKeyPbkdf2([string] $Password, [byte[]] $Salt, [int] $Iterations, [int] $byteCount, [string] $HashName) {
     $passBytes = [System.Text.UTF8Encoding]::UTF8.GetBytes($password)
-    $hashAlg = Invoke-Expression "New-Object System.Security.Cryptography.HMAC$hashName"
-    $deriveBytes = New-Object Medo.Security.Cryptography.Pbkdf2 @($hashAlg, $passBytes, $salt, $iterations)
-    $keyData = $deriveBytes.GetBytes($byteCount)
+    $derivation =
+        if ($hashName -eq 'SHA1') {
+            New-Object System.Security.Cryptography.Rfc2898DeriveBytes @($passBytes, $salt, $iterations)
+        } else {
+            $hashAlg = Invoke-Expression "New-Object System.Security.Cryptography.HMAC$hashName"
+            Add-Type -TypeDefinition ((Get-Content "$psScriptRoot/pbkdf2.cs") -join "`n") `
+                -ReferencedAssemblies 'System.Security.Cryptography.Primitives.dll','System.IO'
+            New-Object Medo.Security.Cryptography.Pbkdf2 @($hashAlg, $passBytes, $salt, $iterations)
+        }
+    $keyData = $derivation.GetBytes($byteCount)
     [PSCustomObject] @{
         Key = $keyData | Select-Object -First ($byteCount / 2)
         Aux = $keyData | Select-Object -Last ($byteCount / 2)
