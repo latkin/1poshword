@@ -1,3 +1,6 @@
+################
+# Shared helpers
+################
 function epoch([uint64] $Seconds) {
     (New-Object DateTime @(1970,1,1,0,0,0,0,'Utc')).AddSeconds($seconds).ToLocalTime()
 }
@@ -22,17 +25,11 @@ function NormalizeEntryType([string] $Type) {
     }
 }
 
-function DecodeSaltedString([string] $EncodedString) {
-    $bytes = [System.Convert]::FromBase64String($encodedString)
-    [PSCustomObject] @{
-        Salt = $bytes[8 .. 15]
-        Data = $bytes[16 .. ($bytes.Length - 1)]
-    }
-}
-
 function DeriveKeyPbkdf2([string] $Password, [byte[]] $Salt, [int] $Iterations, [int] $byteCount, [string] $HashName) {
     $passBytes = [System.Text.UTF8Encoding]::UTF8.GetBytes($password)
     $derivation =
+        # if hash algorithm is SHA1, can use built-in Rfc2898DeriveBytes
+        # otherwise, need to use custom code
         if ($hashName -eq 'SHA1') {
             New-Object System.Security.Cryptography.Rfc2898DeriveBytes @($passBytes, $salt, $iterations)
         } else {
@@ -86,43 +83,6 @@ function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
     $result
 }
 
-function DecryptOPVaulOPData([string] $Data, [PSObject] $Key) {
-    $dataBytes = [Convert]::FromBase64String($data)
-    $dataLen = 0
-    $mul = 1
-    $dataBytes[8..15] |% { $dataLen += $mul * $_; $mul *= 256 }
-    $padLength = 16 - ($dataLen % 16)
-    $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First (32 + $padLength + $dataLen)))
-    $declaredHash = $dataBytes | Select-Object -Skip (32 + $padLength + $dataLen)
-    if (Compare-Object $computedHash $declaredHash) {
-        Write-Error "Unable to validate master password"
-    }
-    $iv = $dataBytes[16..31]
-    $encryptedBytes = $dataBytes | Select-Object -Skip 32 | Select-Object -First ($dataLen + $padLength)
-    AESDecrypt $encryptedBytes $key.Key $iv | Select-Object -Skip $padLength
-}
-
-function DecryptOPVaultItemKey([string] $Data, [PSObject] $Key) {
-    $dataBytes = [Convert]::FromBase64String($data)
-    $iv = $dataBytes[0..15]
-    $encryptedKey = $dataBytes[16..79]
-    $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First 80))
-    $declaredHash = $dataBytes | Select-Object -Last 32
-    if (Compare-Object $computedHash $declaredHash) {
-        Write-Error "Unable to validate master password"
-    }
-
-    AESDecrypt $encryptedKey $key.Key $iv
-}
-
-function GetOPVaultKeyFromBytes([byte[]] $Bytes) {
-    $keyHash = [System.Security.Cryptography.SHA512]::Create().ComputeHash($bytes)
-    [PSCustomObject] @{
-        Key = $keyHash | Select-Object -First 32
-        Aux = $keyHash | Select-Object -Last 32
-    }
-}
-
 function PickDecryptionKey([Entry] $Entry) {
     $keys = Get-Content "$($entry.VaultPath)/data/default/encryptionKeys.js" | ConvertFrom-Json |% List
     if ($entry.KeyId) { $keys |? Identifier -eq $entry.KeyId }
@@ -160,8 +120,19 @@ function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
     }
 }
 
-function Decrypt([string] $Data, [object] $Key, [int] $Iterations, [switch] $MD5, [switch] $Pbkdf2) {
-    $decoded = DecodeSaltedString $data
+#######################
+# AgileKeychain helpers
+#######################
+function DecodeAgileKeychainSaltedString([string] $EncodedString) {
+    $bytes = [System.Convert]::FromBase64String($encodedString)
+    [PSCustomObject] @{
+        Salt = $bytes[8 .. 15]
+        Data = $bytes[16 .. ($bytes.Length - 1)]
+    }
+}
+
+function DecryptAgileKeychainData([string] $Data, [object] $Key, [int] $Iterations, [switch] $MD5, [switch] $Pbkdf2) {
+    $decoded = DecodeAgileKeychainSaltedString $data
     $finalKey =
         if ($md5) {
             DeriveKeyMD5 ([byte[]] $key) $decoded.Salt
@@ -173,34 +144,17 @@ function Decrypt([string] $Data, [object] $Key, [int] $Iterations, [switch] $MD5
     AESDecrypt $decoded.Data $finalKey.Key $finalKey.Aux
 }
 
-function DecryptEntry([Entry] $Entry, [securestring] $Password) {
+function DecryptAgileKeychainEntry([Entry] $Entry, [securestring] $Password) {
     $decryptionKey = PickDecryptionKey $entry
 
-    $dataKey = Decrypt -Pbkdf2 $decryptionKey.Data $password $decryptionKey.Iterations
-    $dataKeyCheck = Decrypt -MD5 $decryptionkey.Validation $dataKey
+    $dataKey = DecryptAgileKeychainData -Pbkdf2 $decryptionKey.Data $password $decryptionKey.Iterations
+    $dataKeyCheck = DecryptAgileKeychainData -MD5 $decryptionkey.Validation $dataKey
     if (Compare-Object $dataKey $dataKeyCheck) {
         Write-Error "Unable to validate master password"
     }
 
-    $entryBytes = Decrypt -MD5 $entry.EncryptedData $dataKey
+    $entryBytes = DecryptAgileKeychainData -MD5 $entry.EncryptedData $dataKey
     $entryString = [System.Text.Encoding]::UTF8.GetString($entryBytes).Trim() -replace '\p{C}+$'
-    GetPayloadFromDecryptedEntry $entryString $entry
-}
-
-function DecryptOPVaultEntry([Entry] $Entry, [securestring] $Password) {
-    $vaultProfile = ((Get-Content "$($entry.VaultPath)/default/profile.js") -replace '^var profile=(.+);$','$1') | ConvertFrom-Json
-    $plainPass = SecureString2String $password
-    $derivedKey = DeriveKeyPbkdf2 $plainPass ([Convert]::FromBase64String($vaultProfile.Salt)) $vaultProfile.Iterations 64 'SHA512'
-    $encryptionKeyData = DecryptOPVaulOPData $vaultProfile.MasterKey $derivedKey
-    $encryptionKey = GetOPVaultKeyFromBytes $encryptionKeyData
-    $itemKeyBytes = DecryptOPVaultItemKey $entry.KeyData $encryptionKey
-    $itemKey = [PSCustomObject] @{
-        Key = $itemKeyBytes | Select-Object -First 32
-        Aux = $itemKeyBytes | Select-Object -Last 32
-    }
-
-    $entryBytes = DecryptOPVaulOPData $entry.EncryptedData $itemKey
-    $entryString = [System.Text.Encoding]::UTF8.GetString($entryBytes)
     GetPayloadFromDecryptedEntry $entryString $entry
 }
 
@@ -223,6 +177,64 @@ function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
         }
     }
     Set-StrictMode -Version 2
+}
+
+#################
+# OPVault helpers
+#################
+function DecryptOPVaulOPData([string] $Data, [PSObject] $Key) {
+    $dataBytes = [Convert]::FromBase64String($data)
+    $dataLen = 0
+    $mul = 1
+    $dataBytes[8..15] |% { $dataLen += $mul * $_; $mul *= 256 }
+    $padLength = 16 - ($dataLen % 16)
+    $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First (32 + $padLength + $dataLen)))
+    $declaredHash = $dataBytes | Select-Object -Skip (32 + $padLength + $dataLen)
+    if (Compare-Object $computedHash $declaredHash) {
+        Write-Error "Unable to validate master password"
+    }
+    $iv = $dataBytes[16..31]
+    $encryptedBytes = $dataBytes | Select-Object -Skip 32 | Select-Object -First ($dataLen + $padLength)
+    AESDecrypt $encryptedBytes $key.Key $iv | Select-Object -Skip $padLength
+}
+
+function DecryptOPVaultItemKey([string] $Data, [PSObject] $Key) {
+    $dataBytes = [Convert]::FromBase64String($data)
+    $iv = $dataBytes[0..15]
+    $encryptedKey = $dataBytes[16..79]
+    $computedHash = (New-Object System.Security.Cryptography.HMACSHA256 @(,$key.Aux)).ComputeHash(($dataBytes | Select-Object -First 80))
+    $declaredHash = $dataBytes | Select-Object -Last 32
+    if (Compare-Object $computedHash $declaredHash) {
+        Write-Error "Unable to validate master password"
+    }
+
+    AESDecrypt $encryptedKey $key.Key $iv
+}
+
+function GetOPVaultKeyFromBytes([byte[]] $Bytes, [switch] $NoHash) {
+    $resultBytes = if ($noHash) { $bytes }
+                   else { [System.Security.Cryptography.SHA512]::Create().ComputeHash($bytes) }
+    [PSCustomObject] @{
+        Key = $resultBytes | Select-Object -First 32
+        Aux = $resultBytes | Select-Object -Last 32
+    }
+}
+
+function DecryptOPVaultEntry([Entry] $Entry, [securestring] $Password) {
+    $vaultProfile = ((Get-Content "$($entry.VaultPath)/default/profile.js") -replace '^var profile=(.+);$','$1') | ConvertFrom-Json
+    $plainPass = SecureString2String $password
+    $derivedKey = DeriveKeyPbkdf2 $plainPass ([Convert]::FromBase64String($vaultProfile.Salt)) $vaultProfile.Iterations 64 'SHA512'
+
+    $encryptionKeyData = DecryptOPVaulOPData $vaultProfile.MasterKey $derivedKey
+    $encryptionKey = GetOPVaultKeyFromBytes $encryptionKeyData
+
+    $itemKeyBytes = DecryptOPVaultItemKey $entry.KeyData $encryptionKey
+    $itemKey = GetOPVaultKeyFromBytes $itemKeyBytes -NoHash
+
+    $entryBytes = DecryptOPVaulOPData $entry.EncryptedData $itemKey
+    $entryString = [System.Text.Encoding]::UTF8.GetString($entryBytes)
+
+    GetPayloadFromDecryptedEntry $entryString $entry
 }
 
 function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $Password) {

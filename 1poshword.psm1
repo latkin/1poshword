@@ -335,7 +335,7 @@ function Unprotect-1PEntry {
         if ($opVault) {
             DecryptOPVaultEntry $entry $password
         } else {
-            DecryptEntry $entry $password
+            DecryptAgileKeychainEntry $entry $password
         }
     switch -regex ($paramSet) {
         'Secure' {

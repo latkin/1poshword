@@ -76,7 +76,6 @@ namespace Medo.Security.Cryptography {
         /// <summary>
         /// Gets salt bytes.
         /// </summary>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Performance", "CA1819:PropertiesShouldNotReturnArrays", Justification = "Byte array is proper return value in this case.")]
         public Byte[] Salt { get; private set; }
 
         /// <summary>
