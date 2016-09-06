@@ -360,10 +360,23 @@ function Unprotect-1PEntry {
     }
 }
 
+Rename-Item function:\TabExpansion TabExpansionBackup
+
+# tab completion support for entry names
+function TabExpansion($line, $lastWord) {
+    if ($script:DefaultVaultPath -like '*agilekeychain') {
+        $lastBlock = ($line -split '[|;]')[-1].TrimStart()
+        if ($lastBlock -match '^(?:1p|g1p|Get-1PEntry|Unprotect-1pEntry)') {
+            return 1PTabExpansion $lastBlock $script:DefaultVaultPath
+        }
+    }
+    TabExpansionBackup $line $lastWord
+}
+
 New-Alias g1p Get-1PEntry
 New-Alias 1p Unprotect-1PEntry
 Update-TypeData -TypeName 'Entry' -DefaultDisplayPropertySet Name,Type,LastUpdated,Location -Force
 
 Export-ModuleMember `
-    -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry' `
+    -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry','TabExpansion' `
     -Alias 'g1p','1p'

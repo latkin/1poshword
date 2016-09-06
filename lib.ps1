@@ -179,6 +179,19 @@ function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
     Set-StrictMode -Version 2
 }
 
+function 1PTabExpansion($lastBlock, $vaultPath) {
+    $entryStub = $lastBlock -replace '^[^\s]+\s+'
+    $quote = "'"
+    if ($entryStub -match "^(`"|')") {
+        $quote = $matches[1]
+        $entryStub = $entryStub -replace "^(`"|')"
+    }
+    GetAgileKeychainEntries $vaultPath "$entryStub*" |% {
+        if ($_ -match '\s') { "$quote$_$quote"}
+        else { $_ }
+    }
+}
+
 #################
 # OPVault helpers
 #################
