@@ -349,10 +349,10 @@ function Unprotect-1PEntry {
         }
         'Plain' {
             if(-not $passwordOnly) {
-                $decrypted.SecureNote
-                $decrypted.Username
+                $decrypted.SecureNote |? { $_ }
+                $decrypted.Username  |? { $_ }
             }
-            $decrypted.Password
+            $decrypted.Password  |? { $_ }
         }
         'CopyPass' {
             ClipboardCopy $decrypted.Password
@@ -360,7 +360,9 @@ function Unprotect-1PEntry {
     }
 }
 
-Rename-Item function:\TabExpansion TabExpansionBackup
+if (Test-Path function:\TabExpansion) {
+    Rename-Item function:\TabExpansion TabExpansionBackup
+}
 
 # tab completion support for entry names
 function TabExpansion($line, $lastWord) {
@@ -370,7 +372,9 @@ function TabExpansion($line, $lastWord) {
             return 1PTabExpansion $lastBlock $script:DefaultVaultPath
         }
     }
-    TabExpansionBackup $line $lastWord
+    if (Test-Path function:\TabExpansionBackup) {
+        TabExpansionBackup $line $lastWord
+    }
 }
 
 New-Alias g1p Get-1PEntry

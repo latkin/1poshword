@@ -35,7 +35,7 @@ function DeriveKeyPbkdf2([string] $Password, [byte[]] $Salt, [int] $Iterations, 
         } else {
             $hashAlg = Invoke-Expression "New-Object System.Security.Cryptography.HMAC$hashName"
             Add-Type -TypeDefinition ((Get-Content "$psScriptRoot/pbkdf2.cs") -join "`n") `
-                -ReferencedAssemblies 'System.Security.Cryptography.Primitives.dll','System.IO'
+                -ReferencedAssemblies ([System.Security.Cryptography.HMAC].Assembly.Location),'System.IO'
             New-Object Medo.Security.Cryptography.Pbkdf2 @($hashAlg, $passBytes, $salt, $iterations)
         }
     $keyData = $derivation.GetBytes($byteCount)
@@ -124,7 +124,7 @@ function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
 # AgileKeychain helpers
 #######################
 function DecodeAgileKeychainSaltedString([string] $EncodedString) {
-    $bytes = [System.Convert]::FromBase64String($encodedString)
+    $bytes = [System.Convert]::FromBase64String($encodedString.Trim(0))
     [PSCustomObject] @{
         Salt = $bytes[8 .. 15]
         Data = $bytes[16 .. ($bytes.Length - 1)]
