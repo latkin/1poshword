@@ -21,6 +21,7 @@ function NormalizeEntryType([string] $Type) {
         '001|WebForm' { 'Login' }
         '003|SecureNote' { 'SecureNote' }
         '005|Password' { 'Password' }
+        'GenericAccount' { 'GenericAccount' }
         default { $type }
     }
 }
@@ -95,14 +96,17 @@ function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
     $password = $null
     $text = $null
 
+    Set-StrictMode -Off
     switch($entry.Type) {
         'Login' {
-            Set-StrictMode -Off
             $password = $decryptedEntry.fields |? Designation -eq 'password' |% Value
             $username = $decryptedEntry.fields |? Designation -eq 'username' |% Value
-            Set-StrictMode -Version 2
         }
         'Password' {
+            $password = $decryptedEntry.password
+        }
+        'GenericAccount' {
+            $username = $decryptedEntry.username
             $password = $decryptedEntry.password
         }
         'SecureNote' {
@@ -112,6 +116,7 @@ function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
             Write-Error "Entry type $typeName is not supported"
         }
     }
+    Set-StrictMode -Version 2
 
     [PSCustomObject] @{
         Username = $username
