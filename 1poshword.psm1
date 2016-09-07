@@ -70,12 +70,12 @@ function Set-1PDefaultVaultPath {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)$') })]
+        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
         [string] $Path
     )
 
     if ($psCmdlet.ShouldProcess($path)) {
-        $script:DefaultVaultPath = $path
+        $script:DefaultVaultPath = (Resolve-Path $path).Path
     }
 }
 
@@ -162,16 +162,16 @@ function Get-1PEntry {
         [Parameter(Position = 1)]
         [SecureString] $Password,
 
-        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)$') })]
+        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
         [string] $VaultPath = ($script:DefaultVaultPath)
     )
 
     if(-not $name){ $name = '*' }
 
     $result = $null
-    if ($vaultPath -like '*.agilekeychain') {
+    if ($vaultPath -match '\.agilekeychain\b') {
         $result = GetAgileKeychainEntries $vaultPath $name
-    } elseif ($vaultPath -like '*.opvault') {
+    } elseif ($vaultPath -match '\.opvault\b') {
         if (-not $password) {
             $password = Read-Host -AsSecureString -Prompt "1Password master password"
         }
@@ -301,12 +301,12 @@ function Unprotect-1PEntry {
         [Parameter(ParameterSetName = 'Name/Secure')]
         [Parameter(ParameterSetName = 'Name/Plain')]
         [Parameter(ParameterSetName = 'Name/CopyPass')]
-        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)$') })]
+        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
         [string] $VaultPath = ($script:DefaultVaultPath)
     )
 
     $paramSet = $psCmdlet.ParameterSetName
-    $opVault = ($name -and ($vaultPath -match '\.opvault$')) -or ($entry -and $entry.KeyData)
+    $opVault = ($name -and ($vaultPath -match '\.opvault\b')) -or ($entry -and $entry.KeyData)
 
     if ($name) {
         if ($opVault -and (-not $password)) {

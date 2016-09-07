@@ -113,7 +113,7 @@ function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
             $text = $decryptedEntry.notesPlain
         }
         default {
-            Write-Error "Entry type $typeName is not supported"
+            Write-Error "Entry type $($entry.Type) is not supported"
         }
     }
     Set-StrictMode -Version 2
@@ -171,7 +171,7 @@ function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
         [Entry] @{
             Name = $_.Title
             Id = $_.Uuid
-            VaultPath = $vaultPath
+            VaultPath = (Resolve-Path $vaultPath).Path
             SecurityLevel = $_.SecurityLevel
             KeyId = $_.KeyId
             Location = $_.Location
@@ -262,7 +262,11 @@ function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $
     $overviewKeyData = DecryptOPVaulOPData $vaultProfile.OverviewKey $derivedKey
     $overviewKey = GetOPVaultKeyFromBytes $overviewKeyData
 
-    $entries = Get-ChildItem "$vaultPath/default/band_*.js" | Get-Content |% { $_ -replace '^[^:]+:(.+)}\);$', '$1' } | ConvertFrom-Json
+    $entries = Get-ChildItem "$vaultPath/default/band_*.js" | Get-Content |% {
+        $bandEntries = $_ -replace '^ld\((.+)\);$', '$1' | ConvertFrom-Json
+        $bandEntries | Get-Member -MemberType NoteProperty |% Name |% { $bandEntries.$_ }
+    }
+
     Set-StrictMode -Off
     $entries |%{
         $entryBytes = DecryptOPVaulOPData $_.o $overviewKey
@@ -270,7 +274,7 @@ function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $
         [Entry] @{
             Name = $entryData.Title
             Id = $_.Uuid
-            VaultPath = $vaultPath
+            VaultPath = (Resolve-Path $vaultPath).Path
             Location = $entryData.Url
             CreatedAt = (epoch $_.Created)
             Type = (NormalizeEntryType $_.Category)
