@@ -82,10 +82,10 @@ test "Get generic account from agile" {
 
 # Get-1PEntry cases specific to opvault
 test "Get all entries from opvault" {
-    $entries = g1p -vaultpath $opVaultPath -password $password
+    $entries = g1p -vaultpath $opVaultPath -vaultpassword $password
     if($entries.Length -ne 4) { throw "Expected 4 entries, got $($entries.length)" }
 
-    $entries = g1p test* -vaultpath $opVaultPath -password $password
+    $entries = g1p test* -vaultpath $opVaultPath -vaultpassword $password
     if($entries.Length -ne 4) { throw "Expected 4 entries, got $($entries.length)" }
 }
 
@@ -105,27 +105,27 @@ test "Decrypt generic account from agile" {
 
 # Unprotect-1PEntry cases specific to opvault
 test "Wrong password getting entries from OPVault" -err 'Unable to validate master password' {
-    g1p -vaultpath $opVaultPath -password $badPassword
+    g1p -vaultpath $opVaultPath -vaultpassword $badPassword
 }
 
 # cases that apply to both vault formats
 foreach($vaultPath in $agileVaultPath, $opVaultPath) {
     # Get-1PEntry positive cases
     test "Get login from $vaultPath" {
-        $entry = g1p TestLogin -vaultpath $vaultPath -password $password
+        $entry = g1p TestLogin -vaultpath $vaultPath -vaultpassword $password
         if($entry.Name -cne 'TestLogin' -or
            $entry.Type -cne 'Login' -or
            $entry.Location -cne 'http://mysite.xyz' -or
            $entry.VaultPath -cne $vaultPath) { throw "Unexpected entry" }
     }
     test "Get password from $vaultPath" {
-        $entry = g1p TestPassword -vaultpath $vaultPath -password $password
+        $entry = g1p TestPassword -vaultpath $vaultPath -vaultpassword $password
         if($entry.Name -cne 'TestPassword' -or
            $entry.Type -cne 'Password' -or
            $entry.VaultPath -cne $vaultPath) { throw "Unexpected entry" }
     }
     test "Get secure note from $vaultPath" {
-        $entry = g1p TestSecureNote -vaultpath $vaultPath -password $password
+        $entry = g1p TestSecureNote -vaultpath $vaultPath -vaultpassword $password
         if($entry.Name -cne 'TestSecureNote' -or
            $entry.Type -cne 'SecureNote' -or
            $entry.VaultPath -cne $vaultPath) { throw "Unexpected entry" }
@@ -133,10 +133,10 @@ foreach($vaultPath in $agileVaultPath, $opVaultPath) {
 
     # Get-1PEntry negative cases
     test "Get bogus entry from $vaultPath" -err 'No 1Password entries found' {
-        g1p FooBar -vaultpath $vaultPath -password $password
+        g1p FooBar -vaultpath $vaultPath -vaultpassword $password
     }
     test "Get bogus entry with wildcard" {
-        g1p FooBar* -vaultpath $vaultPath -password $password
+        g1p FooBar* -vaultpath $vaultPath -vaultpassword $password
     }
 
     # Unprotect-1PEntry positive cases
@@ -145,7 +145,7 @@ foreach($vaultPath in $agileVaultPath, $opVaultPath) {
         if('calvin' -cne $data[0]) { throw "Wrong username $data" }
         if('p@ssw0rd' -cne $data[1]) { throw "Wrong password $data" }
 
-        $data = g1p TestLogin $password -vaultpath $vaultPath | 1p -password $password -plain
+        $data = g1p TestLogin $password -vaultpath $vaultPath | 1p -vaultpassword $password -plain
         if('calvin' -cne $data[0]) { throw "Wrong username $data" }
         if('p@ssw0rd' -cne $data[1]) { throw "Wrong password $data" }
 
@@ -155,32 +155,56 @@ foreach($vaultPath in $agileVaultPath, $opVaultPath) {
         $cred = 1p TestLogin $password -vaultpath $vaultPath
         if('calvin' -cne $cred.Username) { throw "Wrong username $data" }
         if('p@ssw0rd' -cne $cred.GetNetworkCredential().Password) { throw "Wrong password $cred" }
+
+        $data = 1p TestLogin $password -vaultpath $vaultPath -po
+        $plainData = SecureString2String $data
+        if('p@ssw0rd' -cne $plainData) { throw "Wrong password $plainData" }
+
+        1p TestPassword $password -vaultpath $vaultPath -clip
+        1p TestPassword $password -vaultpath $vaultPath -clip -po
     }
 
     test "Decrypt password from $vaultPath" {
         $data = 1p TestPassword $password -vaultpath $vaultPath -plain
         if('p@ssw0rd' -cne $data) { throw "Wrong password $data" }
 
-        $data = g1p TestPassword $password -vaultpath $vaultPath | 1p -password $password -plain
+        $data = g1p TestPassword $password -vaultpath $vaultPath | 1p -vaultpassword $password -plain
         if('p@ssw0rd' -cne $data) { throw "Wrong password $data" }
 
         $data = 1p TestPassword $password -vaultpath $vaultPath -plain -po
         if('p@ssw0rd' -cne $data) { throw "Wrong password $data" }
 
-        $cred = 1p TestPassword $password -vaultpath $vaultPath
-        if('<none>' -cne $cred.Username) { throw "Wrong username $data" }
-        if('p@ssw0rd' -cne $cred.GetNetworkCredential().Password) { throw "Wrong password $cred" }
+        $data = 1p TestPassword $password -vaultpath $vaultPath
+        $plainData = SecureString2String $data
+        if('p@ssw0rd' -cne $plainData) { throw "Wrong password $plainData" }
+
+        $data = 1p TestPassword $password -vaultpath $vaultPath -po
+        $plainData = SecureString2String $data
+        if('p@ssw0rd' -cne $plainData) { throw "Wrong password $plainData" }
+
+        1p TestPassword $password -vaultpath $vaultPath -clip
+        1p TestPassword $password -vaultpath $vaultPath -clip -po
     }
     test "Decrypt secure note from $vaultPath" {
         $data = 1p TestSecureNote $password -vaultpath $vaultPath -plain
         if('Hello there!' -cne $data) { throw "Wrong note $data" }
 
-        $data = g1p TestSecureNote $password -vaultpath $vaultPath | 1p -password $password -plain
+        $data = 1p TestSecureNote $password -vaultpath $vaultPath -plain -po
+        if('Hello there!' -cne $data) { throw "Wrong note $data" }
+
+        $data = g1p TestSecureNote $password -vaultpath $vaultPath | 1p -vaultpassword $password -plain
         if('Hello there!' -cne $data) { throw "Wrong note $data" }
 
         $data = 1p TestSecureNote $password -vaultpath $vaultPath
-        $plainData = (New-Object PSCredential @('x', $data)).GetNetworkCredential().Password
+        $plainData = SecureString2String $data
         if('Hello there!' -cne $plainData) { throw "Wrong note $plainData" }
+
+        $data = 1p TestSecureNote $password -vaultpath $vaultPath -po
+        $plainData = SecureString2String $data
+        if('Hello there!' -cne $plainData) { throw "Wrong note $plainData" }
+
+        1p TestSecureNote $password -vaultpath $vaultPath -clip
+        1p TestSecureNote $password -vaultpath $vaultPath -clip -po
     }
 
     # Unprotect-1PEntry negative cases
@@ -195,12 +219,6 @@ foreach($vaultPath in $agileVaultPath, $opVaultPath) {
     }
     test "Multiple entries decrypting" -err 'More than one entry matches' {
         1p * $password -vaultpath $vaultPath
-    }
-    test "PasswordOnly with secure note" -err 'Password-only operations are not available' {
-        1p TestSecureNote $password -vaultpath $vaultPath -po -plaintext
-    }
-    test "CopyPass with secure note" -err 'Password-only operations are not available' {
-        1p TestSecureNote $password -vaultpath $vaultPath -copypass
     }
     test "Unsupported entry type" -err 'Entry type (002|wallet.financial.CreditCard) is not supported' {
         1p TestCreditCard $password -vaultpath $vaultPath

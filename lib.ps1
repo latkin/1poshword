@@ -10,10 +10,21 @@ function SecureString2String([SecureString] $ss) {
 }
 
 function ClipboardCopy([string[]] $Data) {
-    if(Get-Command 'clip.exe' -CommandType Application -ea 0) { $data | clip.exe }
-    elseif(Get-Command 'pbcopy' -CommandType Application -ea 0) { $data | pbcopy }
-    elseif(Get-Command 'xclip' -CommandType Application -ea 0) { $data | xclip -selection clipboard }
-    else { Write-Error "Unable to locate clipboard utility" }
+    # turbo h4x to get stuff working cross-plat, with support for
+    # copying w/o trailing newline
+    $clipTemplate = 
+        if (Get-Command 'clip.exe' -CommandType Application -ea 0) { 'cmd.exe /c "type {0} | clip.exe"' }
+        elseif (Get-Command 'pbcopy' -CommandType Application -ea 0) { "bash --noprofile --norc -c `"cat {0} | pbcopy`"" }
+        elseif (Get-Command 'xclip' -CommandType Application -ea 0) { "bash --noprofile --norc -c `"cat {0} | xclip -selection clipboard`"" }
+        else { Write-Error "Unable to locate clipboard utility" }
+
+    $tmp = New-TemporaryFile
+    try {
+        [IO.File]::WriteAllText($tmp.FullName, $data -join "`n")
+        Invoke-Expression ($clipTemplate -f $tmp.FullName)
+    } finally {
+        Remove-Item $tmp
+    }
 }
 
 function NormalizeEntryType([string] $Type) {
@@ -167,7 +178,8 @@ function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
     $contents = Get-Content "$vaultPath/data/default/contents.js" | ConvertFrom-Json
     $entryIds = $contents |? { $_[2] -like $name } |% { $_[0] }
     Set-StrictMode -Off
-    $entryIds |%{ Get-ChildItem "$vaultPath/data/default/$_.1password" } | Get-Content | ConvertFrom-Json |% {
+    $entryIds |%{ Get-ChildItem "$vaultPath/data/default/$_.1password" } | Get-Content | ConvertFrom-Json `
+        |? { $_.Uuid -and ($_.Trashed -ne 'true') } |% {
         [Entry] @{
             Name = $_.Title
             Id = $_.Uuid
@@ -268,7 +280,7 @@ function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $
     }
 
     Set-StrictMode -Off
-    $entries |%{
+    $entries |? Category -ne '099' |%{
         $entryBytes = DecryptOPVaulOPData $_.o $overviewKey
         $entryData = [System.Text.Encoding]::UTF8.GetString($entryBytes) | ConvertFrom-Json
         [Entry] @{

@@ -1,12 +1,14 @@
 #Requires -Version 3
+param([string] $DefaultVaultPath)
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
 $home = if($env:USERPROFILE){ $env:USERPROFILE } else { $env:HOME }
-$DefaultVaultPath =
-    if (Test-Path "$home/Dropbox/1Password/1Password.agilekeychain"){ "$home/Dropbox/1Password/1Password.agilekeychain" }
-    elseif (Test-Path "$home/Dropbox/1Password/1Password.opvault") { "$home/Dropbox/1Password/1Password.opvault" }
-    else { Write-Warning "Unable to auto-detect a 1Password vault location" }
-
+if(-not $DefaultVaultPath) {
+    $DefaultVaultPath =
+        if (Test-Path "$home/Dropbox/1Password/1Password.agilekeychain"){ "$home/Dropbox/1Password/1Password.agilekeychain" }
+        elseif (Test-Path "$home/Dropbox/1Password/1Password.opvault") { "$home/Dropbox/1Password/1Password.opvault" }
+        else { Write-Warning "Unable to auto-detect a 1Password vault location. Use Set-1PDefaultVaultPath to set a default." }
+}
 # Add-Type is very slow, prefer Powershell types.
 # Sadly, these declarations need to be in the primary module file
 # due to limitations on usage of Powershell types
@@ -108,8 +110,8 @@ against an 'opvault' vault.
 Specifies the name of the 1Password entry.
 A case-insensitive wildcard match is used.
 
-.PARAMETER Password
-Specifies the 1Password master password.
+.PARAMETER VaultPassword
+Specifies the 1Password vault password.
 Required only if the 1Password vault is in 'opvault' format. In this case, if no value is specified,
 the user will be prompted to enter password interactively.
 
@@ -120,22 +122,22 @@ The default root directory can be read via Get-1PDefaultVaultPath, and changed v
 .EXAMPLE
 # Gets an entry by name
 
-PS ~$ Get-1PEntry email
+PS ~$ Get-1PEntry gmail
 Name   Type  LastUpdated          Location
 ----   ----  -----------          --------
-email  Login 11/30/15 12:11:50 AM https://accounts.hotg.com/ServiceLogin
+gmail  Login 11/30/15 12:11:50 AM https://accounts.gmail.com/ServiceLogin
 
 # show all available properties
 
-PS ~$ Get-1PEntry email | Format-List *
+PS ~$ Get-1PEntry gmail | Format-List *
 
-Name          : email
+Name          : gmail
 Id            : 11C5741DE2294A1EB32FB088F5838951
 VaultPath     : /Users/calvin/Dropbox/1Password/1Password.agilekeychain
 SecurityLevel : SL5
 KeyId         :
 KeyData       :
-Location      : https://accounts.hotg.com/ServiceLogin
+Location      : https://accounts.gmail.com/ServiceLogin
 Type          : Login
 CreatedAt     : 10/28/15 11:21:15 PM
 LastUpdated   : 11/30/15 12:11:50 AM
@@ -160,7 +162,7 @@ function Get-1PEntry {
         [string] $Name,
 
         [Parameter(Position = 1)]
-        [SecureString] $Password,
+        [SecureString] $VaultPassword,
 
         [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
         [string] $VaultPath = ($script:DefaultVaultPath)
@@ -172,10 +174,10 @@ function Get-1PEntry {
     if ($vaultPath -match '\.agilekeychain\b') {
         $result = GetAgileKeychainEntries $vaultPath $name
     } elseif ($vaultPath -match '\.opvault\b') {
-        if (-not $password) {
-            $password = Read-Host -AsSecureString -Prompt "1Password master password"
+        if (-not $vaultPassword) {
+            $vaultPassword = Read-Host -AsSecureString -Prompt "1Password vault password"
         }
-        $result = GetOPVaultEntries $vaultPath $name $password
+        $result = GetOPVaultEntries $vaultPath $name $vaultPassword
     }
     if((-not $result) -and ($name -notmatch '\*')) {
         Write-Error "No 1Password entries found with name $name"
@@ -185,13 +187,13 @@ function Get-1PEntry {
 
 <#
 .SYNOPSIS
-Decrypts a 1Password Login, Password, or Secure Note.
+Decrypts a 1Password Login, Password, Secure Note, or Generic Account.
 
 .DESCRIPTION
-Decrypts a 1Password Login, Password, or Secure Note to various output formats.
-Logins and Passwords are returned as PSCredential by default.
-Secure Notes are returned as SecureString by default.
-All forms can optionally be returned as plaintext strings.
+Decrypts a 1Password Login, Password, Secure Note, or Generic Account to various output formats.
+Logins and Generic Adcounts are returned as PSCredential by default.
+Passwords and Secure Notes are returned as SecureString by default.
+All forms can optionally be returned as plaintext strings or copied to the clipboard.
 
 .PARAMETER Name
 Specifies the name of the 1Password entry.
@@ -201,28 +203,25 @@ An error is thrown if no entries, or more than one entry, match the specified na
 .PARAMETER Entry
 Specifies the 1Password entry to decrypt.
 
-.PARAMETER Password
-Specifies the 1Password master password.
+.PARAMETER VaultPassword
+Specifies the 1Password vault password.
 If no value is specified, the user will be prompted to enter password interactively.
 
 .PARAMETER Plaintext
 If specified, the decrypted data will be returned as plaintext strings.
-Logins will be returned as 2 strings (username followed by password) unless -PasswordOnly is also specified.
+Logins and Generic Accounts will be returned as 2 strings (username followed by password) unless -PasswordOnly is also specified.
 Passwords and Secure Notes will be returned as 1 string.
 
 .PARAMETER PasswordOnly
-If specified with -Plaintext, only the password field is returned from Login entries.
-This parameter has no effect when returning Password entries.
-Secure Note entries are not supported with this parameter and will result in an error.
+If specified, only the password field is included in the output.
+This parameter has no effect when returning Password or Secure Note entries.
 
-.PARAMETER CopyPassword
-If specified, the password field of a Login or Password entry will be copied to the
-system clipboard. No output will be returned to the pipeline.
-Attempts to use a system clipboard utility for copying:
+.PARAMETER Clip
+If specified, the plaintext content of the entry will be copied to the clipboard.
+Attempts to use a system utility for copying:
   - Windows: clip.exe
   - Mac: pbcopy
   - Linux: xclip
-Secure Note entries are not supported with this parameter and will result in an error.
 
 .PARAMETER VaultPath
 Specifies the root directory of the 1Password vault from which to read.
@@ -232,34 +231,34 @@ The default root directory can be read via Get-1PDefaultVaultPath, and changed v
 # Gets a login as a PSCredential.
 
 PS ~$ Unprotect-1PEntry email
-1Password master password: **********
+1Password vault password: **********
 
-UserName                               Password
---------                               --------
-calvin@hotg.com    System.Security.SecureString
+UserName                                Password
+--------                                --------
+calvin@gmail.com    System.Security.SecureString
 
 .EXAMPLE
 # Pipes a decrypted password into another command which normally prompts for a password.
 
-PS ~$ Unprotect-1PEntry sudopass -Plaintext | sudo -Sk echo "`ndude, sweet"
-1Password master password: **********
+PS ~$ Unprotect-1PEntry systemlogin -Plaintext -PasswordOnly | sudo -Sk echo "`ndude, sweet"
+1Password vault password: **********
 Password:
 dude, sweet
 
 .EXAMPLE
-# Temporarily reveals a Secure Note by piping it to 'more'
+# Temporarily reveals a Secure Note by piping it to 'less'
 
-PS ~$ Get-1PEntry mynote | Unprotect-1PEntry -Plaintext | more
-1Password master password: **********
+PS ~$ Get-1PEntry mynote | Unprotect-1PEntry -Plaintext | less
+1Password vault password: **********
 
 .EXAMPLE
 # Copies a password to the clipboard
 
-PS ~$ Unprotect-1PEntry mylogin -CopyPassword
-1Password master password: **********
+PS ~$ Unprotect-1PEntry mylogin -Clip -PasswordOnly
+1Password vault password: **********
 
 .EXAMPLE
-# Uses a bound SecureString object to specify the 1Password master password.
+# Uses a bound SecureString object to specify the 1Password vault password.
 
 PS ~$ $p = Read-Host -AsSecureString "Speak, friend, and enter"
 Speak, friend, and enter: **********
@@ -273,34 +272,37 @@ function Unprotect-1PEntry {
     param(
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/Secure')]
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/Plain')]
-        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/CopyPass')]
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Name/Clip')]
         [string] $Name,
 
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Secure')]
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Plain')]
-        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/CopyPass')]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Clip')]
         [Entry] $Entry,
 
         [Parameter(Position = 1)]
-        [SecureString] $Password,
+        [SecureString] $VaultPassword,
 
         [Parameter(Mandatory = $true, ParameterSetName = 'Name/Plain')]
         [Parameter(Mandatory = $true, ParameterSetName = 'Entry/Plain')]
         [switch] $Plaintext,
 
+        [Parameter(ParameterSetName = 'Name/Secure')]
         [Parameter(ParameterSetName = 'Name/Plain')]
+        [Parameter(ParameterSetName = 'Name/Clip')]
+        [Parameter(ParameterSetName = 'Entry/Secure')]
         [Parameter(ParameterSetName = 'Entry/Plain')]
+        [Parameter(ParameterSetName = 'Entry/Clip')]
         [Alias('po')]
         [switch] $PasswordOnly,
 
-        [Parameter(Mandatory = $true, ParameterSetName = 'Name/CopyPass')]
-        [Parameter(Mandatory = $true, ParameterSetName = 'Entry/CopyPass')]
-        [Alias('cp')]
-        [switch] $CopyPassword,
+        [Parameter(Mandatory = $true, ParameterSetName = 'Name/Clip')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'Entry/Clip')]
+        [switch] $Clip,
 
         [Parameter(ParameterSetName = 'Name/Secure')]
         [Parameter(ParameterSetName = 'Name/Plain')]
-        [Parameter(ParameterSetName = 'Name/CopyPass')]
+        [Parameter(ParameterSetName = 'Name/Clip')]
         [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
         [string] $VaultPath = ($script:DefaultVaultPath)
     )
@@ -309,11 +311,11 @@ function Unprotect-1PEntry {
     $opVault = ($name -and ($vaultPath -match '\.opvault\b')) -or ($entry -and $entry.KeyData)
 
     if ($name) {
-        if ($opVault -and (-not $password)) {
-            $password = Read-Host -AsSecureString -Prompt "1Password master password"
+        if ($opVault -and (-not $vaultPassword)) {
+            $vaultPassword = Read-Host -AsSecureString -Prompt "1Password vault password"
         }
 
-        $entries = Get-1PEntry -Name $name -VaultPath $vaultPath -Password $password
+        $entries = Get-1PEntry -Name $name -VaultPath $vaultPath -VaultPassword $vaultPassword
         if (-not $entries) {
             Write-Error "No 1Password entries found with name $name"
         }
@@ -324,39 +326,35 @@ function Unprotect-1PEntry {
         $entry = $entries
     }
 
-    if ($entry.Type -eq 'SecureNote' -and ($passwordOnly -or $copyPassword)) {
-        Write-Error "Password-only operations are not available for Secure Notes"
-    }
-    if(-not $password){
-        $password = Read-Host -AsSecureString -Prompt "1Password master password"
+    if(-not $vaultPassword){
+        $vaultPassword = Read-Host -AsSecureString -Prompt "1Password vault password"
     }
 
     $decrypted =
         if ($opVault) {
-            DecryptOPVaultEntry $entry $password
+            DecryptOPVaultEntry $entry $vaultPassword
         } else {
-            DecryptAgileKeychainEntry $entry $password
+            DecryptAgileKeychainEntry $entry $vaultPassword
         }
-    switch -regex ($paramSet) {
-        'Secure' {
-            if ($decrypted.SecureNote) {
-                ConvertTo-SecureString $decrypted.SecureNote -AsPlainText -Force
-            } else {
-                $securePass = ConvertTo-SecureString $decrypted.Password -AsPlainText -Force
-                $username = if ($decrypted.Username) { $decrypted.Username } else { '<none>' }
-                New-Object PSCredential @($username, $securePass)
-            }
+
+    if ($paramSet -match 'Secure') {
+        if ($entry.Type -eq 'SecureNote') {
+            ConvertTo-SecureString $decrypted.SecureNote -AsPlainText -Force
+        } elseif (($entry.Type -eq 'Password') -or ($passwordOnly)) {
+            ConvertTo-SecureString $decrypted.Password -AsPlainText -Force
+        } else {
+            New-Object PSCredential @($decrypted.Username, (ConvertTo-SecureString $decrypted.Password -AsPlainText -Force))
         }
-        'Plain' {
+    } else {
+        $result = $(
             if(-not $passwordOnly) {
-                $decrypted.SecureNote |? { $_ }
                 $decrypted.Username  |? { $_ }
             }
+            $decrypted.SecureNote |? { $_ }
             $decrypted.Password  |? { $_ }
-        }
-        'CopyPass' {
-            ClipboardCopy $decrypted.Password
-        }
+        )
+        if ($paramSet -match 'Plain') { $result }
+        elseif ($paramSet -match 'Clip') { ClipboardCopy $result }
     }
 }
 
@@ -366,7 +364,7 @@ if (Test-Path function:\TabExpansion) {
 
 # tab completion support for entry names
 function TabExpansion($line, $lastWord) {
-    if ($script:DefaultVaultPath -like '*agilekeychain') {
+    if ($script:DefaultVaultPath -match '\.agilekeychain\b') {
         $lastBlock = ($line -split '[|;]')[-1].TrimStart()
         if ($lastBlock -match '^(?:1p|g1p|Get-1PEntry|Unprotect-1pEntry)') {
             return 1PTabExpansion $lastBlock $script:DefaultVaultPath
