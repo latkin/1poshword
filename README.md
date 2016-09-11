@@ -1,6 +1,8 @@
 # 1Poshword
 PowerShell client for 1Password
 
+![demo](demo.gif)
+
   - Cross-platform (Windows/OSX/Linux, PowerShell v3.0+)
   - `agilekeychain` and `opvault` support
   - Login, Password, Secure Note, and Generic Account decryption
@@ -25,7 +27,7 @@ Import-Module ./1poshword.psm1
 
 ### `Get-1PEntry`
 
-Alias `g1p`
+Lists 1Password entries. Alias `g1p`.
 
 ```
 PS> g1p
@@ -61,7 +63,12 @@ EncryptedData : U2FsdGVkX198K5razrhlihDvUrIC2FTp29PcqQpmO48MApG758vljLe+z...
 
 ### `Unprotect-1PEntry`
 
-Alias `1p`. For any of below, add flag `-PasswordOnly` (alias `-po`) to output only an entry's password field.
+Derypts a particular 1Password entry to a variety of formats. Alias `1p`.
+
+Add flag `-PasswordOnly` (alias `-po`) to output only an entry's password field.
+
+(Yes, "unprotect" is weird, but that's the [approved verb](https://msdn.microsoft.com/en-us/library/ms714428(v=vs.85).aspx)
+for decryption so we're going with it.)
 
 <table>
   <tr>
@@ -73,7 +80,7 @@ Alias `1p`. For any of below, add flag `-PasswordOnly` (alias `-po`) to output o
     <td>PSCredential</td>
     <td>Default for<ul><li>Login</li><li>Generic Account</li></td>
     <td><pre>PS> 1p twitter
-1Password master password: ***************
+1Password vault password: ***************
 
 UserName                            Password
 --------                            --------
@@ -84,7 +91,7 @@ LincolnAtkinson System.Security.SecureString</pre>
     <td>SecureString</td>
     <td>Default for<ul><li>Secure Note</li><li>Password</li></td>
     <td><pre>PS> 1p ssh
-1Password master password: ***************
+1Password vault password: ***************
 
 System.Security.SecureString</pre>
     </td>
@@ -94,7 +101,7 @@ System.Security.SecureString</pre>
     <td/>
     <td><pre>
 PS> 1p github -plain
-1Password master password: ***************
+1Password vault password: ***************
 
 latkin
 p@ssw0rd1</pre>
@@ -104,7 +111,7 @@ p@ssw0rd1</pre>
     <td>Clipboard</td>
     <td/>
     <td><pre>PS> 1p 'Gmail - Personal' -clip
-1Password master password: ***************</pre>
+1Password vault password: ***************</pre>
     </td>
   </tr>
 
@@ -127,7 +134,10 @@ PS> 1p twitter -clip -po</pre>
   </tr>
   <tr>
     <td>Custom vault path</td>
-    <td><pre># per-command
+    <td><pre># at import
+PS> Import-Module 1poshword.psm1 -args <.agilekeychain or .opvault path>
+
+# per-command
 PS> 1p entryname -VaultPath <.agilekeychain or .opvault path>
 
 # change default
