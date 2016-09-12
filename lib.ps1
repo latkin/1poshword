@@ -20,7 +20,7 @@ function ClipboardCopy([string[]] $Data) {
 
     $tmp = New-TemporaryFile
     try {
-        [IO.File]::WriteAllText($tmp.FullName, $data -join "`n")
+        [IO.File]::WriteAllText($tmp.FullName, $data -join [Environment]::NewLine)
         Invoke-Expression ($clipTemplate -f $tmp.FullName)
     } finally {
         Remove-Item $tmp
