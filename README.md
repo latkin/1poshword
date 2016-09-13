@@ -17,6 +17,14 @@ PowerShell client for 1Password
 
 ## Quickstart
 
+Install from the [PowerShell Gallery](https://www.powershellgallery.com/packages/1Poshword) (Windows-only, PS v5+):
+
+```
+PS> Install-Module -Name 1Poshword
+```
+
+Direct download:
+
 ```
 '1Poshword.psd1','1Poshword.psm1','lib.ps1','pbkdf2.cs' |% {
     Invoke-WebRequest https://raw.githubusercontent.com/latkin/1poshword/master/$_ -OutFile ./$_
