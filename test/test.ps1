@@ -44,11 +44,11 @@ function test($name, [ScriptBlock] $action, $errPattern) {
     }
 }
 
-log 'Uninstalling module'
-Get-Module 1poshword -ea 0 | Uninstall-Module
+log 'Removing module'
+Get-Module 1poshword -ea 0 | Remove-Module -ea 0
 
 log 'Importing module'
-Import-Module $psScriptRoot/../1poshword.psm1
+Import-Module $psScriptRoot/../1Poshword.psm1
 
 # Get/Set-1PDefaultVaultPath cases
 test 'Set/get default agilekeychain' {
@@ -160,8 +160,8 @@ foreach($vaultPath in $agileVaultPath, $opVaultPath) {
         $plainData = SecureString2String $data
         if('p@ssw0rd' -cne $plainData) { throw "Wrong password $plainData" }
 
-        1p TestPassword $password -vaultpath $vaultPath -clip
-        1p TestPassword $password -vaultpath $vaultPath -clip -po
+        1p TestLogin $password -vaultpath $vaultPath -clip
+        1p TestLogin $password -vaultpath $vaultPath -clip -po
     }
 
     test "Decrypt password from $vaultPath" {

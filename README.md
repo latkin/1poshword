@@ -3,7 +3,7 @@ PowerShell client for 1Password
 
 ![demo](demo.gif)
 
-  - Cross-platform (Windows/OSX/Linux, PowerShell v3.0+)
+  - Cross-platform (Windows/OSX/Linux, PowerShell v4.0+)
   - `agilekeychain` and `opvault` support
   - Login, Password, Secure Note, and Generic Account decryption
   - Metadata for all entries
@@ -18,11 +18,11 @@ PowerShell client for 1Password
 ## Quickstart
 
 ```
-'1poshword.psm1','lib.ps1','pbkdf2.cs' |% {
+'1Poshword.psd1','1Poshword.psm1','lib.ps1','pbkdf2.cs' |% {
     Invoke-WebRequest https://raw.githubusercontent.com/latkin/1poshword/master/$_ -OutFile ./$_
 }
 
-Import-Module ./1poshword.psm1
+Import-Module ./1Poshword.psd1
 ```
 
 ### `Get-1PEntry`
@@ -135,7 +135,7 @@ PS> 1p twitter -clip -po</pre>
   <tr>
     <td>Custom vault path</td>
     <td><pre># at import
-PS> Import-Module 1poshword.psm1 -args <.agilekeychain or .opvault path>
+PS> Import-Module 1Poshword.psd1 -args <.agilekeychain or .opvault path>
 
 # per-command
 PS> 1p entryname -VaultPath <.agilekeychain or .opvault path>

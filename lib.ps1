@@ -18,10 +18,10 @@ function ClipboardCopy([string[]] $Data) {
         elseif (Get-Command 'xclip' -CommandType Application -ea 0) { "bash --noprofile --norc -c `"cat {0} | xclip -selection clipboard`"" }
         else { Write-Error "Unable to locate clipboard utility" }
 
-    $tmp = New-TemporaryFile
+    $tmp = [IO.Path]::GetTempFileName()
     try {
-        [IO.File]::WriteAllText($tmp.FullName, $data -join [Environment]::NewLine)
-        Invoke-Expression ($clipTemplate -f $tmp.FullName)
+        [IO.File]::WriteAllText($tmp, $data -join [Environment]::NewLine)
+        Invoke-Expression ($clipTemplate -f $tmp)
     } finally {
         Remove-Item $tmp
     }
@@ -95,13 +95,13 @@ function AESDecrypt([byte[]] $Data, [byte[]] $Key, [byte[]] $IV) {
     $result
 }
 
-function PickDecryptionKey([Entry] $Entry) {
+function PickDecryptionKey([PSCustomObject] $Entry) {
     $keys = Get-Content "$($entry.VaultPath)/data/default/encryptionKeys.js" | ConvertFrom-Json |% List
     if ($entry.KeyId) { $keys |? Identifier -eq $entry.KeyId }
     else { $keys |? Level -eq $entry.SecurityLevel }
 }
 
-function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [Entry] $Entry) {
+function GetPayloadFromDecryptedEntry([string] $DecryptedJson, [PSCustomObject] $Entry) {
     $decryptedEntry = $decryptedJson | ConvertFrom-Json
     $username = $null
     $password = $null
@@ -160,7 +160,7 @@ function DecryptAgileKeychainData([string] $Data, [object] $Key, [int] $Iteratio
     AESDecrypt $decoded.Data $finalKey.Key $finalKey.Aux
 }
 
-function DecryptAgileKeychainEntry([Entry] $Entry, [securestring] $Password) {
+function DecryptAgileKeychainEntry([PSCustomObject] $Entry, [securestring] $Password) {
     $decryptionKey = PickDecryptionKey $entry
 
     $dataKey = DecryptAgileKeychainData -Pbkdf2 $decryptionKey.Data $password $decryptionKey.Iterations
@@ -180,7 +180,7 @@ function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
     Set-StrictMode -Off
     $entryIds |%{ Get-ChildItem "$vaultPath/data/default/$_.1password" } | Get-Content | ConvertFrom-Json `
         |? { $_.Uuid -and ($_.Trashed -ne 'true') } |% {
-        [Entry] @{
+        [PSCustomObject] @{
             Name = $_.Title
             Id = $_.Uuid
             VaultPath = (Resolve-Path $vaultPath).Path
@@ -191,21 +191,25 @@ function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
             Type = (NormalizeEntryType $_.TypeName)
             LastUpdated = (epoch $_.UpdatedAt)
             EncryptedData = $_.Encrypted
+            KeyData = $null
         }
-    }
+    } | Add-Member -TypeName 'Entry' -PassThru
     Set-StrictMode -Version 2
 }
 
-function 1PTabExpansion($lastBlock, $vaultPath) {
-    $entryStub = $lastBlock -replace '^[^\s]+\s+'
-    $quote = "'"
+function 1PTabExpansion($entryStub, $vaultPath) {
+    $quote = $null
     if ($entryStub -match "^(`"|')") {
         $quote = $matches[1]
-        $entryStub = $entryStub -replace "^(`"|')"
+        $entryStub = $entryStub -replace "^(`"|')+"
     }
-    GetAgileKeychainEntries $vaultPath "$entryStub*" |% {
-        if ($_ -match '\s') { "$quote$_$quote"}
-        else { $_ }
+    $entryStub = $entryStub -replace "(`"|')+$"
+    GetAgileKeychainEntries $vaultPath "$entryStub*" |% Name |% {
+        $localQuote =
+            if ($quote) { $quote }
+            elseif ($_ -match '\s') { "'" }
+            else { $null }
+        "$localQuote$_$localQuote"
     }
 }
 
@@ -250,7 +254,7 @@ function GetOPVaultKeyFromBytes([byte[]] $Bytes, [switch] $NoHash) {
     }
 }
 
-function DecryptOPVaultEntry([Entry] $Entry, [securestring] $Password) {
+function DecryptOPVaultEntry([PSCustomObject] $Entry, [securestring] $Password) {
     $vaultProfile = ((Get-Content "$($entry.VaultPath)/default/profile.js") -replace '^var profile=(.+);$','$1') | ConvertFrom-Json
     $plainPass = SecureString2String $password
     $derivedKey = DeriveKeyPbkdf2 $plainPass ([Convert]::FromBase64String($vaultProfile.Salt)) $vaultProfile.Iterations 64 'SHA512'
@@ -283,17 +287,19 @@ function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $
     $entries |? Category -ne '099' |%{
         $entryBytes = DecryptOPVaulOPData $_.o $overviewKey
         $entryData = [System.Text.Encoding]::UTF8.GetString($entryBytes) | ConvertFrom-Json
-        [Entry] @{
+        [PSCustomObject] @{
             Name = $entryData.Title
             Id = $_.Uuid
             VaultPath = (Resolve-Path $vaultPath).Path
+            SecurityLevel = $null
+            KeyId = $null
             Location = $entryData.Url
             CreatedAt = (epoch $_.Created)
             Type = (NormalizeEntryType $_.Category)
             LastUpdated = (epoch $_.Updated)
             EncryptedData = $_.D
             KeyData = $_.K
-        }
+        } | Add-Member -TypeName 'Entry' -PassThru
     } |? Name -like $name
     Set-StrictMode -Version 2
 }

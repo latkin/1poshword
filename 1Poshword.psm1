@@ -1,51 +1,14 @@
-#Requires -Version 3
+#Requires -Version 4
 param([string] $DefaultVaultPath)
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
-$home = if($env:USERPROFILE){ $env:USERPROFILE } else { $env:HOME }
+$defaultVaultPath =
+    $defaultVaultPath,"$home/Dropbox/1Password/1Password.agilekeychain","$home/Dropbox/1Password/1Password.opvault" `
+    |? { $_ -and (Test-Path $_) } `
+    | Resolve-Path `
+    | Select-Object -First 1
 if(-not $DefaultVaultPath) {
-    $DefaultVaultPath =
-        if (Test-Path "$home/Dropbox/1Password/1Password.agilekeychain"){ "$home/Dropbox/1Password/1Password.agilekeychain" }
-        elseif (Test-Path "$home/Dropbox/1Password/1Password.opvault") { "$home/Dropbox/1Password/1Password.opvault" }
-        else { Write-Warning "Unable to auto-detect a 1Password vault location. Use Set-1PDefaultVaultPath to set a default." }
-}
-# Add-Type is very slow, prefer Powershell types.
-# Sadly, these declarations need to be in the primary module file
-# due to limitations on usage of Powershell types
-if($PSVersionTable.PSVersion -ge '5.0.0') {
-    class Entry {
-        [string] $Name
-        [string] $Id
-        [string] $VaultPath
-        [string] $SecurityLevel
-        [string] $KeyId
-        [string] $KeyData
-        [string] $Location
-        [string] $Type
-        [DateTime] $CreatedAt
-        [DateTime] $LastUpdated
-        [string] $EncryptedData
-        [string] ToString() { return $this.Name }
-    }
-} else {
-    Add-Type -ea 0 @'
-    public class Entry {
-        public string Name;
-        public string Id;
-        public string VaultPath;
-        public string SecurityLevel;
-        public string KeyId;
-        public string KeyData;
-        public string Location;
-        public string Type;
-        public System.DateTime CreatedAt;
-        public System.DateTime LastUpdated;
-        public string EncryptedData;
-        public override string ToString() {
-           return Name;
-        }
-     }
-'@
+    Write-Warning "Unable to auto-detect a 1Password vault location. Use Set-1PDefaultVaultPath to set a default."
 }
 
 . $psScriptRoot/lib.ps1
@@ -77,7 +40,7 @@ function Set-1PDefaultVaultPath {
     )
 
     if ($psCmdlet.ShouldProcess($path)) {
-        $script:DefaultVaultPath = (Resolve-Path $path).Path
+        $script:DefaultVaultPath = Resolve-Path $path
     }
 }
 
@@ -278,7 +241,7 @@ function Unprotect-1PEntry {
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Secure')]
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Plain')]
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Entry/Clip')]
-        [Entry] $Entry,
+        [PSCustomObject] $Entry,
 
         [Parameter(Position = 1)]
         [SecureString] $VaultPassword,
@@ -358,21 +321,25 @@ function Unprotect-1PEntry {
     }
 }
 
-if (Test-Path function:\TabExpansion) {
-    Rename-Item function:\TabExpansion TabExpansionBackup
+$1pArgCompleter = {
+    param($commandName, $parameterName, $wordToComplete, $commandAst, $boundParameters)
+    if ($script:DefaultVaultPath -match '\.agilekeychain\b') {
+        1PTabExpansion $wordToComplete $script:DefaultVaultPath
+    }
 }
 
-# tab completion support for entry names
-function TabExpansion($line, $lastWord) {
-    if ($script:DefaultVaultPath -match '\.agilekeychain\b') {
-        $lastBlock = ($line -split '[|;]')[-1].TrimStart()
-        if ($lastBlock -match '^(?:1p|g1p|Get-1PEntry|Unprotect-1pEntry)') {
-            return 1PTabExpansion $lastBlock $script:DefaultVaultPath
-        }
+if (Get-Command 'Register-ArgumentCompleter' -ea 0) {
+    Register-ArgumentCompleter -CommandName 'Get-1PEntry','Unprotect-1PEntry' -ParameterName Name -ScriptBlock $1pArgCompleter
+} else {
+    $global:1pTabExpansionOptions = @{
+        CustomArgumentCompleters = @{}
+        NativeArgumentCompleters = @{}
     }
-    if (Test-Path function:\TabExpansionBackup) {
-        TabExpansionBackup $line $lastWord
-    }
+
+    $global:1pTabExpansionOptions['CustomArgumentCompleters']['Get-1PEntry:Name'] = $1pArgCompleter
+    $global:1pTabExpansionOptions['CustomArgumentCompleters']['Unprotect-1PEntry:Name'] = $1pArgCompleter
+
+    $function:tabexpansion2 = $function:tabexpansion2 -replace 'End(\r|\n|\s)*{','End { if ($null -ne $options) { $options += $global:1pTabExpansionOptions} else {$options = $global:1pTabExpansionOptions};'
 }
 
 New-Alias g1p Get-1PEntry
