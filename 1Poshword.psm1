@@ -1,13 +1,18 @@
 #Requires -Version 4
-param([string] $DefaultVaultPath)
+param(
+    [string[]] $DefaultVaultPath
+)
+
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
+
 $defaultVaultPath =
-    $defaultVaultPath,"$home/Dropbox/1Password/1Password.agilekeychain","$home/Dropbox/1Password/1Password.opvault" `
+    $defaultVaultPath + @("$home/Dropbox/1Password/1Password.agilekeychain", "$home/Dropbox/1Password/1Password.opvault") `
     |? { $_ -and (Test-Path $_) } `
     | Resolve-Path `
-    | Select-Object -First 1
-if(-not $DefaultVaultPath) {
+    | %{ $_.Path }
+
+if (-not $DefaultVaultPath) {
     Write-Warning "Unable to auto-detect a 1Password vault location. Use Set-1PDefaultVaultPath to set a default."
 }
 
@@ -35,12 +40,12 @@ function Set-1PDefaultVaultPath {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
-        [string] $Path
+        [ValidateScript( { -not ($_ |? { !(Test-Path $_ -PathType Container) -or !($_ -match '\.(agilekeychain|opvault)(/|\\)?$')}) } )]
+        [string[]] $Path
     )
 
     if ($psCmdlet.ShouldProcess($path)) {
-        $script:DefaultVaultPath = Resolve-Path $path
+        $script:DefaultVaultPath = $path | % { (Resolve-Path $_).Path }
     }
 }
 
@@ -128,19 +133,29 @@ function Get-1PEntry {
         [SecureString] $VaultPassword,
 
         [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
-        [string] $VaultPath = ($script:DefaultVaultPath)
+        [string[]] $VaultPath = ($script:DefaultVaultPath)
     )
 
     if(-not $name){ $name = '*' }
 
     $result = $null
-    if ($vaultPath -match '\.agilekeychain\b') {
-        $result = GetAgileKeychainEntries $vaultPath $name
-    } elseif ($vaultPath -match '\.opvault\b') {
-        if (-not $vaultPassword) {
-            $vaultPassword = Read-Host -AsSecureString -Prompt "1Password vault password"
+
+    $agileVaults = $vaultPath |? { $_ -match '\.agilekeychain\b' }
+    $agileResult =
+        if ($agileVaults) {
+           $agileVaults |%{ GetAgileKeychainEntries $_ $name }
+        } else {
+            @()
         }
-        $result = GetOPVaultEntries $vaultPath $name $vaultPassword
+    
+
+    $opVaults = $vaultPath |? { $_ -match '\.opvault\b' }
+    $opResult = 
+        if($opVaults) {
+            if (-not $vaultPassword) {
+                $vaultPassword = Read-Host -AsSecureString -Prompt "1Password vault password"
+            }
+            GetOPVaultEntries $opVaults $name $vaultPassword
     }
     if((-not $result) -and ($name -notmatch '\*')) {
         Write-Error "No 1Password entries found with name $name"
