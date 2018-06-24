@@ -303,3 +303,56 @@ function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $
     } |? Name -like $name
     Set-StrictMode -Version 2
 }
+
+#################
+# OP CLI helpers
+#################
+
+function GetCLI {
+    $commands = @(Get-Command -CommandType Application -Name 'op' -ea 0)
+    if ($commands) {
+        $commands[0].Source
+    }
+    else {
+        Write-Error "Unable to locate op CLI. Please ensure the op CLI is on the PATH."
+    }
+}
+
+function ConnectAccount($accountName, $masterPassword, $email, $secretKey) {
+    $cli = GetCLI
+    $subDomain = $accountName
+    if ($accountName -match '^(https://)?(?<subdomain>[^\.]+)(\.1password\.com)?$') {
+        $subDomain = $matches['subdomain']
+        $accountName = "https://${subDomain}.1password.com"
+    }
+    $plainPass = SecureString2String $masterPassword
+
+    $errorActionPreference = 'Continue'
+    if ($email -and $secretKey) {
+        $plainKey = SecureString2String $secretKey
+        $output = &$cli signin $accountName $email $plainKey $plainPass '--output=raw' 2>&1
+        $errorActionPreference = 'Stop'
+        if ($LASTEXITCODE -eq 0) {
+            Set-Item Env:/OP_SESSION_$subDomain $output
+        }
+        else {
+            Write-Error "Error connecting account: $output"
+        }
+    }
+    else {
+        $output = $plainPass | &$cli signin $accountName '--output=raw' 2>&1
+        $errorActionPreference = 'Stop'
+        if ($lastExitCode -eq 0) {
+            Set-Item Env:/OP_SESSION_$subDomain $output
+        }
+        elseif ($lastExitCode -eq 1) {
+            Write-Error "The first time you connect an account on a machine, you need to specify your email and secret key"
+        }
+        elseif ($lastExitCode -eq 401) {
+            Write-Error "The specified password is not recognized"
+        }
+        else {
+            Write-Error "Error connecting account: $output"
+        }
+    }
+}

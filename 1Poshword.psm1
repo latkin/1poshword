@@ -1,14 +1,21 @@
 #Requires -Version 4
-param([string] $DefaultVaultPath)
+param(
+    [string] $DefaultVaultPath,
+    [string] $DefaultAccountName
+)
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
+
 $defaultVaultPath =
     $defaultVaultPath,"$home/Dropbox/1Password/1Password.agilekeychain","$home/Dropbox/1Password/1Password.opvault" `
     |? { $_ -and (Test-Path $_) } `
     | Resolve-Path `
     | Select-Object -First 1
-if(-not $DefaultVaultPath) {
-    Write-Warning "Unable to auto-detect a 1Password vault location. Use Set-1PDefaultVaultPath to set a default."
+
+$defaultAccountName = $DefaultAccountName
+
+if ((-not $DefaultVaultPath) -and (-not $defaultAccountName)) {
+    Write-Warning "No local vault or hosted accounts specified. Use Set-1PDefaultVaultPath or Connect-1PAccount to configure defaults."
 }
 
 . $psScriptRoot/lib.ps1
@@ -35,13 +42,46 @@ function Set-1PDefaultVaultPath {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
+        [ValidateScript( { (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
         [string] $Path
     )
 
     if ($psCmdlet.ShouldProcess($path)) {
         $script:DefaultVaultPath = Resolve-Path $path
     }
+}
+
+
+function Set-1PDefaultAccountName {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $AccountName
+    )
+
+    if ($psCmdlet.ShouldProcess($AccountName)) {
+        $script:DefaultAccountName = $AccountName
+    }
+}
+
+function Connect-1PAccount {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string] $AccountName,
+
+        [Parameter(Position = 1)]
+        [securestring] $Password,
+
+        [string] $Email,
+
+        [securestring] $SecretKey
+    )
+
+    if (-not $password) {
+        $password = Read-Host -AsSecureString -Prompt "Master password for account $accountName"
+    }
+    ConnectAccount $accountName $password $email $secretKey
 }
 
 <#
@@ -164,7 +204,7 @@ A case-insensitive wildcard match is used.
 An error is thrown if no entries, or more than one entry, match the specified name.
 
 .PARAMETER Entry
-Specifies the 1Password entry to decrypt.
+Specifies the 1Password entry to decrypt.  
 
 .PARAMETER VaultPassword
 Specifies the 1Password vault password.
@@ -347,5 +387,5 @@ New-Alias 1p Unprotect-1PEntry
 Update-TypeData -TypeName 'Entry' -DefaultDisplayPropertySet Name,Type,LastUpdated,Location -Force
 
 Export-ModuleMember `
-    -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry','TabExpansion' `
+    -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry','Connect-1PAccount','TabExpansion' `
     -Alias 'g1p','1p'
