@@ -6,7 +6,9 @@ function epoch([uint64] $Seconds) {
 }
 
 function SecureString2String([SecureString] $ss) {
-    (New-Object PSCredential @('xyz', $ss)).GetNetworkCredential().Password
+    if ($ss) {
+        (New-Object PSCredential @('xyz', $ss)).GetNetworkCredential().Password
+    }
 }
 
 function ClipboardCopy([string[]] $Data) {
@@ -181,17 +183,19 @@ function GetAgileKeychainEntries([string] $VaultPath, [string] $name) {
     $entryIds |%{ Get-ChildItem "$vaultPath/data/default/$_.1password" } | Get-Content | ConvertFrom-Json `
         |? { $_.Uuid -and ($_.Trashed -ne 'true') } |% {
         [PSCustomObject] @{
-            Name = $_.Title
-            Id = $_.Uuid
-            VaultPath = (Resolve-Path $vaultPath).Path
+            Name          = $_.Title
+            Id            = $_.Uuid
+            Account       = $null
+            VaultPath     = (Resolve-Path $vaultPath).Path
+            Vault         = (Resolve-Path $vaultPath).Path
             SecurityLevel = $_.SecurityLevel
-            KeyId = $_.KeyId
-            Location = $_.Location
-            CreatedAt = (epoch $_.CreatedAt)
-            Type = (NormalizeEntryType $_.TypeName)
-            LastUpdated = (epoch $_.UpdatedAt)
+            KeyId         = $_.KeyId
+            Location      = $_.Location
+            CreatedAt     = (epoch $_.CreatedAt)
+            Type          = (NormalizeEntryType $_.TypeName)
+            LastUpdated   = (epoch $_.UpdatedAt)
             EncryptedData = $_.Encrypted
-            KeyData = $null
+            KeyData       = $null
         }
     } | Add-Member -TypeName 'Entry' -PassThru
     Set-StrictMode -Version 2
@@ -288,17 +292,19 @@ function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $
         $entryBytes = DecryptOPVaulOPData $_.o $overviewKey
         $entryData = [System.Text.Encoding]::UTF8.GetString($entryBytes) | ConvertFrom-Json
         [PSCustomObject] @{
-            Name = $entryData.Title
-            Id = $_.Uuid
-            VaultPath = (Resolve-Path $vaultPath).Path
+            Name          = $entryData.Title
+            Id            = $_.Uuid
+            Account       = $null
+            VaultPath     = (Resolve-Path $vaultPath).Path
+            Vault         = (Resolve-Path $vaultPath).Path
             SecurityLevel = $null
-            KeyId = $null
-            Location = $entryData.Url
-            CreatedAt = (epoch $_.Created)
-            Type = (NormalizeEntryType $_.Category)
-            LastUpdated = (epoch $_.Updated)
+            KeyId         = $null
+            Location      = $entryData.Url
+            CreatedAt     = (epoch $_.Created)
+            Type          = (NormalizeEntryType $_.Category)
+            LastUpdated   = (epoch $_.Updated)
             EncryptedData = $_.D
-            KeyData = $_.K
+            KeyData       = $_.K
         } | Add-Member -TypeName 'Entry' -PassThru
     } |? Name -like $name
     Set-StrictMode -Version 2
@@ -308,6 +314,11 @@ function GetOPVaultEntries([string] $VaultPath, [string] $Name, [securestring] $
 # OP CLI helpers
 #################
 
+function WrapEAP($sb) {
+    $errorActionPreference = 'Continue'
+    & $sb
+    $errorActionPreference = 'Stop'
+}
 function GetCLI {
     $commands = @(Get-Command -CommandType Application -Name 'op' -ea 0)
     if ($commands) {
@@ -318,32 +329,49 @@ function GetCLI {
     }
 }
 
-function ConnectAccount($accountName, $masterPassword, $email, $secretKey) {
-    $cli = GetCLI
-    $subDomain = $accountName
-    if ($accountName -match '^(https://)?(?<subdomain>[^\.]+)(\.1password\.com)?$') {
-        $subDomain = $matches['subdomain']
-        $accountName = "https://${subDomain}.1password.com"
-    }
-    $plainPass = SecureString2String $masterPassword
-
-    $errorActionPreference = 'Continue'
-    if ($email -and $secretKey) {
-        $plainKey = SecureString2String $secretKey
-        $output = &$cli signin $accountName $email $plainKey $plainPass '--output=raw' 2>&1
-        $errorActionPreference = 'Stop'
-        if ($LASTEXITCODE -eq 0) {
-            Set-Item Env:/OP_SESSION_$subDomain $output
+function ParseAccount($nameOrUrl) {
+    $name = 
+        if ($nameOrUrl -match '^(https://)?(?<subdomain>[^\.]+)(\.1password\.com)?$') {
+            $matches['subdomain']
         }
         else {
-            Write-Error "Error connecting account: $output"
+            $nameOrUrl
+        }
+    $url = "https://${name}.1password.com"
+    [pscustomobject]@{ Name = $name; Url = $url }
+}
+
+function NeedsReconnect($accountName, $accountLastAction) {
+    if ($accountLastAction.ContainsKey($accountName)) {
+        ([DateTime]::UtcNow - $accountLastAction[$accountName]).TotalMinutes -ge 29.75
+    }
+    else {
+        $true
+    }
+}
+
+function ConnectAccount($accountName, $accountUrl, $password, $email, $secretKey, $accountLastAction) {
+    $cli = GetCLI
+    $plainPass = SecureString2String $password
+
+    if ($email -and $secretKey) {
+        $plainKey = SecureString2String $secretKey
+        $output = WrapEAP { &$cli signin $accountUrl $email $plainKey $plainPass '--output=raw' }
+
+        if ($LASTEXITCODE -eq 0) {
+            $accountLastAction[$accountName] = [DateTime]::UtcNow
+            Set-Item Env:/OP_SESSION_$accountName $output
+        }
+        else {
+            Write-Error "Error connecting account"
         }
     }
     else {
-        $output = $plainPass | &$cli signin $accountName '--output=raw' 2>&1
-        $errorActionPreference = 'Stop'
+        $output = WrapEAP { $plainPass | &$cli signin $accountUrl '--output=raw' }
+
         if ($lastExitCode -eq 0) {
-            Set-Item Env:/OP_SESSION_$subDomain $output
+            $accountLastAction[$accountName] = [DateTime]::UtcNow
+            Set-Item Env:/OP_SESSION_$accountName $output
         }
         elseif ($lastExitCode -eq 1) {
             Write-Error "The first time you connect an account on a machine, you need to specify your email and secret key"
@@ -352,7 +380,53 @@ function ConnectAccount($accountName, $masterPassword, $email, $secretKey) {
             Write-Error "The specified password is not recognized"
         }
         else {
-            Write-Error "Error connecting account: $output"
+            Write-Error "Error connecting account"
         }
+    }
+}
+
+function GetAccountVaults($accountName) {
+    $cli = GetCLI
+    $output = WrapEAP { &$cli list vaults "--account=$accountName" 2>&1 }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Error listing vaults: $output"
+    }
+    else {
+        $result = @{}
+        $output | ConvertFrom-Json | % { $_ } |  % {
+            $result[$_.uuid] = $_.name
+        }
+        $result
+    }
+}
+function GetAccountEntries($accountName, $name) {
+    $cli = GetCLI
+
+    $vaults = GetAccountVaults $accountName
+
+    $output = WrapEAP { &$cli list items "--account=$accountName" 2>&1 }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Error listing items: $output"
+    }
+    else {
+        Set-StrictMode -Off
+        $output | ConvertFrom-Json | % { $_ } | % {
+            [PSCustomObject] @{
+                Name          = $_.overview.title
+                Id            = $_.uuid
+                Account       = $accountName
+                VaultPath     = $null
+                Vault         = $vaults[$_.vaultUuid]
+                SecurityLevel = $null
+                KeyId         = $null
+                Location      = $_.overview.url
+                CreatedAt     = [DateTime]$_.createdAt
+                Type          = (NormalizeEntryType $_.templateUuid)
+                LastUpdated   = [DateTime]$_.updatedAt
+                EncryptedData = $null
+                KeyData       = $null
+            } | Add-Member -TypeName 'Entry' -PassThru
+        } |? Name -like $name
+        Set-StrictMode -Version 2
     }
 }

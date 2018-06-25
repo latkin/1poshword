@@ -1,7 +1,7 @@
 #Requires -Version 4
 param(
     [string] $DefaultVaultPath,
-    [string] $DefaultAccountName
+    [string] $DefaultAccount
 )
 Set-StrictMode -Version 2
 $errorActionPreference = 'Stop'
@@ -12,9 +12,10 @@ $defaultVaultPath =
     | Resolve-Path `
     | Select-Object -First 1
 
-$defaultAccountName = $DefaultAccountName
+$defaultAccount = $DefaultAccount
+$accountLastAction = @{}
 
-if ((-not $DefaultVaultPath) -and (-not $defaultAccountName)) {
+if ((-not $DefaultVaultPath) -and (-not $defaultAccount)) {
     Write-Warning "No local vault or hosted accounts specified. Use Set-1PDefaultVaultPath or Connect-1PAccount to configure defaults."
 }
 
@@ -51,42 +52,6 @@ function Set-1PDefaultVaultPath {
     }
 }
 
-function Set-1PDefaultAccount {
-    [CmdletBinding(SupportsShouldProcess = $true)]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $AccountName
-    )
-
-    if ($psCmdlet.ShouldProcess($AccountName)) {
-        $script:DefaultAccountName = $AccountName
-    }
-}
-
-function Get-1PDefaultAccount {
-    $script:DefaultAccountName
-}
-
-function Connect-1PAccount {
-    [CmdletBinding(SupportsShouldProcess = $true)]
-    param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [string] $AccountName,
-
-        [Parameter(Position = 1)]
-        [securestring] $Password,
-
-        [string] $Email,
-
-        [securestring] $SecretKey
-    )
-
-    if (-not $password) {
-        $password = Read-Host -AsSecureString -Prompt "Master password for account $accountName"
-    }
-    ConnectAccount $accountName $password $email $secretKey
-}
-
 <#
 .SYNOPSIS
 Gets the default 1Password root directory.
@@ -100,6 +65,43 @@ PS ~$ Get-1PDefaultVaultPath
 #>
 function Get-1PDefaultVaultPath {
     $script:DefaultVaultPath
+}
+
+function Set-1PDefaultAccount {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Account
+    )
+
+    if ($psCmdlet.ShouldProcess($Account)) {
+        $script:DefaultAccount = $Account
+    }
+}
+
+function Get-1PDefaultAccount {
+    $script:DefaultAccount
+}
+
+function Connect-1PAccount {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string] $Account,
+
+        [Parameter(Position = 1)]
+        [securestring] $Password,
+
+        [string] $Email,
+
+        [securestring] $SecretKey
+    )
+
+    if (-not $password) {
+        $password = Read-Host -AsSecureString -Prompt "Password for account $account"
+    }
+    $account = ParseAccount $account
+    ConnectAccount $account.Name $account.Url $password $email $secretKey $accountLastAction
 }
 
 <#
@@ -167,24 +169,41 @@ function Get-1PEntry {
         [Parameter(Position = 0)]
         [string] $Name,
 
+        [Alias('VaultPassword')]
         [Parameter(Position = 1)]
-        [SecureString] $VaultPassword,
+        [SecureString] $Password,
 
+        [Parameter(Mandatory = $true, ParameterSetName = 'Local')]
         [ValidateScript({ (Test-Path $_ -PathType Container) -and ($_ -match '\.(agilekeychain|opvault)(/|\\)?$') })]
-        [string] $VaultPath = ($script:DefaultVaultPath)
+        [string] $VaultPath = ($script:DefaultVaultPath),
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'Hosted')]
+        [string] $Account = ($script:DefaultAccount)
     )
 
     if(-not $name){ $name = '*' }
 
     $result = $null
-    if ($vaultPath -match '\.agilekeychain\b') {
-        $result = GetAgileKeychainEntries $vaultPath $name
-    } elseif ($vaultPath -match '\.opvault\b') {
-        if (-not $vaultPassword) {
-            $vaultPassword = Read-Host -AsSecureString -Prompt "1Password vault password"
+    if ($pscmdlet.ParameterSetName -eq 'Local') {
+        if ($vaultPath -match '\.agilekeychain\b') {
+            $result = GetAgileKeychainEntries $vaultPath $name
         }
-        $result = GetOPVaultEntries $vaultPath $name $vaultPassword
+        elseif ($vaultPath -match '\.opvault\b') {
+            if (-not $Password) {
+                $Password = Read-Host -AsSecureString -Prompt "1Password vault password"
+            }
+            $result = GetOPVaultEntries $vaultPath $name $vaultPassword
+        }
+    } elseif($pscmdlet.ParameterSetName -eq 'Hosted') {
+        $account = ParseAccount $account
+
+        if (NeedsReconnect $account.Name $accountLastAction) {
+            Connect-1PAccount -Account $account -Password $password
+        }
+
+        $result = GetAccountEntries $account.Name $name
     }
+    
     if((-not $result) -and ($name -notmatch '\*')) {
         Write-Error "No 1Password entries found with name $name"
     }
