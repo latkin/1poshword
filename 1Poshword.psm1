@@ -51,8 +51,7 @@ function Set-1PDefaultVaultPath {
     }
 }
 
-
-function Set-1PDefaultAccountName {
+function Set-1PDefaultAccount {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
@@ -62,6 +61,10 @@ function Set-1PDefaultAccountName {
     if ($psCmdlet.ShouldProcess($AccountName)) {
         $script:DefaultAccountName = $AccountName
     }
+}
+
+function Get-1PDefaultAccount {
+    $script:DefaultAccountName
 }
 
 function Connect-1PAccount {
@@ -387,5 +390,12 @@ New-Alias 1p Unprotect-1PEntry
 Update-TypeData -TypeName 'Entry' -DefaultDisplayPropertySet Name,Type,LastUpdated,Location -Force
 
 Export-ModuleMember `
-    -Function 'Get-1PDefaultVaultPath','Set-1PDefaultVaultPath','Get-1PEntry','Unprotect-1PEntry','Connect-1PAccount','TabExpansion' `
+    -Function @('Get-1PDefaultVaultPath',
+                'Set-1PDefaultVaultPath',
+                'Get-1PEntry',
+                'Unprotect-1PEntry',
+                'Get-1PDefaultAccount',
+                'Set-1PDefaultAccount',
+                'Connect-1PAccount',
+                'TabExpansion') `
     -Alias 'g1p','1p'
